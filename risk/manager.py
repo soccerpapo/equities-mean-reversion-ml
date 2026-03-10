@@ -9,8 +9,54 @@ logger = logging.getLogger(__name__)
 class RiskManager:
     """Manages position sizing and risk controls."""
 
+    def calculate_atr_stops(
+        self,
+        entry_price: float,
+        atr: float,
+        side: str,
+        atr_stop_mult: float = 2.0,
+        atr_profit_mult: float = 3.0,
+    ) -> tuple:
+        """Calculate dynamic stop-loss and take-profit prices based on ATR.
+
+        Args:
+            entry_price: Price at trade entry
+            atr: Average True Range value at entry
+            side: 'long' or 'short'
+            atr_stop_mult: Multiplier for stop-loss distance (default 2.0)
+            atr_profit_mult: Multiplier for take-profit distance (default 3.0)
+
+        Returns:
+            Tuple of (stop_loss_price, take_profit_price)
+        """
+        if entry_price <= 0 or atr <= 0:
+            return (0.0, 0.0)
+        if side == "long":
+            stop_loss = entry_price - atr_stop_mult * atr
+            take_profit = entry_price + atr_profit_mult * atr
+        else:  # short
+            stop_loss = entry_price + atr_stop_mult * atr
+            take_profit = entry_price - atr_profit_mult * atr
+        return (stop_loss, take_profit)
+
+    def apply_regime_sizing(self, base_size: int, regime_multiplier: float) -> int:
+        """Scale position size by a regime multiplier.
+
+        Args:
+            base_size: Base number of shares from normal position sizing
+            regime_multiplier: Multiplier from regime detector (0.0, 0.5, or 1.0)
+
+        Returns:
+            Adjusted number of shares (floored to int)
+        """
+        return int(base_size * max(0.0, regime_multiplier))
+
     def calculate_position_size(
-        self, account_value: float, price: float, signal_strength: float
+        self,
+        account_value: float,
+        price: float,
+        signal_strength: float,
+        regime_multiplier: float = 1.0,
     ) -> int:
         """Calculate number of shares using fixed fractional sizing.
 
@@ -18,6 +64,7 @@ class RiskManager:
             account_value: Total portfolio value
             price: Current asset price
             signal_strength: Signal confidence (0-1)
+            regime_multiplier: Position size multiplier from regime detector (default 1.0)
 
         Returns:
             Number of shares to trade
@@ -27,7 +74,7 @@ class RiskManager:
         max_dollar = account_value * settings.MAX_POSITION_SIZE_PCT
         adjusted_dollar = max_dollar * max(0.0, min(1.0, signal_strength))
         shares = int(adjusted_dollar / price)
-        return shares
+        return self.apply_regime_sizing(shares, regime_multiplier)
 
     def check_stop_loss(self, entry_price: float, current_price: float, side: str) -> bool:
         """Check if stop loss has been triggered.

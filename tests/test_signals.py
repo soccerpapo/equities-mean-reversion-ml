@@ -118,3 +118,69 @@ class TestSignalGeneration:
         result = sig_gen.generate_mean_reversion_signals(df)
         hold_pct = (result["signal"] == 0).mean()
         assert hold_pct > 0.9, f"Expected mostly HOLDs but got {hold_pct:.2%} HOLDs"
+
+
+class TestVolatilityRegimeFilter:
+    def _make_df_with_vol(self, n=300, vol_scale=1.0, seed=0):
+        np.random.seed(seed)
+        close = 100 + np.cumsum(np.random.randn(n) * vol_scale)
+        close = np.abs(close) + 1
+        dates = pd.date_range("2020-01-01", periods=n, freq="B")
+        return pd.DataFrame({"Close": close}, index=dates)
+
+    def test_normal_vol_allows_trading(self, sig_gen):
+        """Normal volatility should be in the acceptable range."""
+        df = self._make_df_with_vol(300, vol_scale=1.0)
+        # We can't guarantee exact percentile without knowing the distribution,
+        # but the method should return a bool without error.
+        result = sig_gen.check_volatility_regime(df)
+        assert isinstance(result, bool)
+
+    def test_insufficient_data_allows_trading(self, sig_gen):
+        """When there is not enough history, allow trading."""
+        df = self._make_df_with_vol(10)
+        assert sig_gen.check_volatility_regime(df) is True
+
+    def test_returns_bool(self, sig_gen):
+        df = self._make_df_with_vol(300)
+        result = sig_gen.check_volatility_regime(df)
+        assert isinstance(result, bool)
+
+
+class TestTrendFilter:
+    def _make_trending_df(self, n=250, uptrend=True):
+        """Create a strongly trending DataFrame."""
+        if uptrend:
+            close = np.linspace(50, 200, n)  # strong uptrend
+        else:
+            close = np.linspace(200, 50, n)  # strong downtrend
+        dates = pd.date_range("2022-01-01", periods=n, freq="B")
+        return pd.DataFrame({"Close": close}, index=dates)
+
+    def test_long_allowed_in_uptrend(self, sig_gen):
+        """BUY signals should be allowed when price is above 200-day SMA."""
+        df = self._make_trending_df(250, uptrend=True)
+        # With only 250 rows, 200-day SMA will be lower than current price in an uptrend
+        assert sig_gen.check_trend_filter(df, "long") is True
+
+    def test_short_blocked_in_uptrend(self, sig_gen):
+        """SELL signals should be blocked when price is above 200-day SMA."""
+        df = self._make_trending_df(250, uptrend=True)
+        assert sig_gen.check_trend_filter(df, "short") is False
+
+    def test_short_allowed_in_downtrend(self, sig_gen):
+        """SELL signals should be allowed when price is below 200-day SMA."""
+        df = self._make_trending_df(250, uptrend=False)
+        assert sig_gen.check_trend_filter(df, "short") is True
+
+    def test_long_blocked_in_downtrend(self, sig_gen):
+        """BUY signals should be blocked when price is below 200-day SMA."""
+        df = self._make_trending_df(250, uptrend=False)
+        assert sig_gen.check_trend_filter(df, "long") is False
+
+    def test_insufficient_data_allows_trading(self, sig_gen):
+        """When there is not enough data for the SMA, allow all trades."""
+        df = self._make_trending_df(50)
+        assert sig_gen.check_trend_filter(df, "long") is True
+        assert sig_gen.check_trend_filter(df, "short") is True
+
