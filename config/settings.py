@@ -53,14 +53,19 @@ PAIRS_ZSCORE_EXIT = 0.5
 PAIRS_ZSCORE_STOP = 3.0
 PAIRS_LOOKBACK = 60  # Rolling window for spread z-score
 PAIRS_COINT_PVALUE = 0.05  # Max p-value for cointegration
-CAPITAL_PER_PAIR = 0.2  # 20% of portfolio per pair
+CAPITAL_PER_PAIR = 0.10  # 10% of portfolio per pair
+MAX_SIMULTANEOUS_PAIRS = 3  # Maximum number of open pair positions at once
+MAX_PAIR_LOSS_PCT = 0.03  # Close a pair if unrealized loss exceeds 3% of capital_per_pair
+PAIR_COOLDOWN_DAYS = 5  # Trading days before a stopped-out pair can re-enter
+MAX_PORTFOLIO_EXPOSURE = 0.6  # Max fraction of portfolio committed to pairs at any time
 
 # Momentum
 MOMENTUM_SMA_FAST = 50
 MOMENTUM_SMA_SLOW = 200
 MOMENTUM_ADX_THRESHOLD = 25
-MOMENTUM_TOP_N = 3  # Number of top stocks to hold
-TRAILING_STOP_ATR_MULT = 2.0
+MOMENTUM_TOP_N = 4  # Number of top stocks to hold
+TRAILING_STOP_ATR_MULT = 2.5
+MOMENTUM_REBALANCE_DAYS = 20  # Rebalance portfolio every N trading days
 
 # Adaptive Strategy
 REGIME_ALLOCATIONS = {

@@ -354,7 +354,11 @@ class BacktestEngine:
           - hedge_ratio: float OLS hedge ratio
 
         Tracks both legs, accounts for margin on short positions, and
-        calculates spread P&L correctly.
+        calculates spread P&L correctly.  Risk controls applied:
+          - MAX_SIMULTANEOUS_PAIRS: cap on open pairs at once
+          - MAX_PAIR_LOSS_PCT: per-pair loss limit relative to capital_per_pair
+          - PAIR_COOLDOWN_DAYS: trading-day cooldown after a forced exit
+          - MAX_PORTFOLIO_EXPOSURE: portfolio-level exposure cap
 
         Args:
             pairs_data: List of pair dicts as described above.
@@ -370,7 +374,11 @@ class BacktestEngine:
         self._trades = []
 
         pt = PairsTrader()
-        capital_per_pair = initial_capital * getattr(settings, "CAPITAL_PER_PAIR", 0.2)
+        capital_per_pair = initial_capital * getattr(settings, "CAPITAL_PER_PAIR", 0.10)
+        max_simultaneous_pairs = getattr(settings, "MAX_SIMULTANEOUS_PAIRS", 3)
+        max_pair_loss_pct = getattr(settings, "MAX_PAIR_LOSS_PCT", 0.03)
+        pair_cooldown_days = getattr(settings, "PAIR_COOLDOWN_DAYS", 5)
+        max_portfolio_exposure = getattr(settings, "MAX_PORTFOLIO_EXPOSURE", 0.6)
 
         all_dates = set()
         for pair in pairs_data:
@@ -387,8 +395,10 @@ class BacktestEngine:
 
         # Per-pair state
         pair_positions: Dict[str, Dict] = {}
+        # Cooldown tracking: pair_key -> day index of forced exit
+        pair_cooldown: Dict[str, int] = {}
 
-        for date in all_dates:
+        for day_idx, date in enumerate(all_dates):
             pair_equity = 0.0
 
             for pair in pairs_data:
@@ -435,27 +445,43 @@ class BacktestEngine:
                     else:
                         pnl_a = (entry_pa - pa) * qty_a
                         pnl_b = (pb - entry_pb) * qty_b
-                    pair_equity += pnl_a + pnl_b
+                    unrealized_pnl = pnl_a + pnl_b
+                    pair_equity += unrealized_pnl
 
-                    # Check exit / stop
+                    # Check exit conditions
                     stop_hit = abs(z) > pt.zscore_stop
                     mean_reverted = (side == 1 and z > -pt.zscore_exit) or \
                                     (side == -1 and z < pt.zscore_exit)
-                    if stop_hit or mean_reverted:
-                        total_pnl = pnl_a + pnl_b
+                    # Per-pair loss limit: exit if unrealized loss exceeds threshold
+                    loss_limit_hit = unrealized_pnl < -(max_pair_loss_pct * capital_per_pair)
+
+                    if stop_hit or mean_reverted or loss_limit_hit:
+                        total_pnl = unrealized_pnl
+                        exit_reason = "stop" if stop_hit else ("loss_limit" if loss_limit_hit else "mean_reversion")
                         self._trades.append({
                             "entry_date": pos["entry_date"],
                             "exit_date": date,
                             "symbol": pair_key,
                             "side": "long_spread" if side == 1 else "short_spread",
                             "pnl": total_pnl,
-                            "exit_reason": "stop" if stop_hit else "mean_reversion",
+                            "exit_reason": exit_reason,
                         })
                         # Return original cost outlay (long leg + short margin) plus P&L
                         cash += pos.get("long_cost", capital_per_pair / 2) + pos.get("short_margin", capital_per_pair / 2) + total_pnl
                         pair_positions.pop(pair_key, None)
                         pair_equity -= total_pnl  # already booked
+                        # Apply cooldown after forced exits (stop or loss limit)
+                        if stop_hit or loss_limit_hit:
+                            pair_cooldown[pair_key] = day_idx
                 elif pair_key not in pair_positions:
+                    # Skip if pair is in cooldown
+                    if pair_key in pair_cooldown and day_idx <= pair_cooldown[pair_key] + pair_cooldown_days:
+                        continue
+
+                    # Skip if already at max simultaneous pairs
+                    if len(pair_positions) >= max_simultaneous_pairs:
+                        continue
+
                     # Try to enter
                     if z < -pt.zscore_entry:
                         side = 1
@@ -476,6 +502,16 @@ class BacktestEngine:
                     long_cost = pa * qty_a
                     short_margin = pb * qty_b * MARGIN_RATE
                     total_cost = long_cost + short_margin
+
+                    # Check portfolio exposure limit before entering
+                    current_exposure = sum(
+                        p.get("long_cost", 0) + p.get("short_margin", 0)
+                        for p in pair_positions.values()
+                    )
+                    portfolio_value_now = cash + pair_equity
+                    if portfolio_value_now > 0 and (current_exposure + total_cost) > max_portfolio_exposure * portfolio_value_now:
+                        continue
+
                     if total_cost > cash:
                         continue
                     cash -= total_cost
@@ -509,7 +545,8 @@ class BacktestEngine:
         """Backtest the momentum strategy across multiple symbols.
 
         Tracks a portfolio of top-N momentum stocks with trailing stops and
-        rebalances when rankings change.
+        rebalances when rankings change or every MOMENTUM_REBALANCE_DAYS days.
+        Uses current portfolio value for position sizing to enable compounding.
 
         Args:
             symbols_data: Dict mapping symbol → OHLCV DataFrame.
@@ -526,6 +563,7 @@ class BacktestEngine:
 
         mt = MomentumTrader()
         top_n = mt.top_n
+        rebalance_days = getattr(settings, "MOMENTUM_REBALANCE_DAYS", 20)
 
         # Generate signals for all symbols
         signals_all: Dict[str, pd.DataFrame] = {}
@@ -547,8 +585,11 @@ class BacktestEngine:
         cash = initial_capital
         positions: Dict[str, Dict] = {}  # symbol → {qty, entry_price, highest}
         portfolio_values = []
+        day_counter = 0
 
         for date in all_dates:
+            day_counter += 1
+
             # --- Check trailing stops & exit signals ---
             for sym in list(positions.keys()):
                 if sym not in signals_all or date not in signals_all[sym].index:
@@ -582,7 +623,46 @@ class BacktestEngine:
                     })
                     del positions[sym]
 
+            # --- Periodic rebalancing: exit positions no longer in top-N ---
+            if day_counter % rebalance_days == 0:
+                # Compute current momentum scores
+                current_scores: Dict[str, float] = {}
+                for sym, sig_df in signals_all.items():
+                    if date in sig_df.index and "momentum_score" in sig_df.columns:
+                        score = sig_df.loc[date, "momentum_score"]
+                        if not pd.isna(score):
+                            current_scores[sym] = float(score)
+                ranked = sorted(current_scores.items(), key=lambda x: x[1], reverse=True)
+                top_n_syms = {sym for sym, _ in ranked[:top_n]}
+                # Exit positions that have dropped out of the top-N
+                for sym in list(positions.keys()):
+                    if sym not in top_n_syms and sym in signals_all and date in signals_all[sym].index:
+                        price = float(signals_all[sym].loc[date, "Close"])
+                        qty = positions[sym]["qty"]
+                        pnl = (price - positions[sym]["entry_price"]) * qty
+                        cash += price * qty
+                        self._trades.append({
+                            "entry_date": positions[sym]["entry_date"],
+                            "exit_date": date,
+                            "symbol": sym,
+                            "side": "long",
+                            "entry_price": positions[sym]["entry_price"],
+                            "exit_price": price,
+                            "qty": qty,
+                            "pnl": pnl,
+                            "exit_reason": "rebalance",
+                        })
+                        del positions[sym]
+
             # --- Enter new positions based on buy signals ---
+            # Use current portfolio value for compounding-based sizing
+            equity_now = sum(
+                float(signals_all[sym].loc[date, "Close"]) * pos["qty"]
+                for sym, pos in positions.items()
+                if sym in signals_all and date in signals_all[sym].index
+            )
+            portfolio_value_now = cash + equity_now
+
             held_count = len(positions)
             for sym, sig_df in signals_all.items():
                 if held_count >= top_n:
@@ -594,7 +674,8 @@ class BacktestEngine:
                 strength = float(row.get("signal_strength", 0))
                 if sig == 1 and strength > 0:
                     price = float(row["Close"])
-                    alloc = (initial_capital / top_n) * strength
+                    # Use current portfolio value for sizing (enables compounding)
+                    alloc = (portfolio_value_now / top_n) * strength
                     qty = max(1, int(alloc / price))
                     cost = price * qty
                     if cost > cash:
@@ -632,8 +713,19 @@ class BacktestEngine:
     ) -> pd.DataFrame:
         """Backtest the adaptive (regime-switching) strategy.
 
-        Switches between Pairs Trading, Momentum, and Cash based on the
-        detected market regime.  Tracks which strategy was active when.
+        Implements a single continuous day-by-day loop to ensure strategies
+        always have full historical context.  The regime detector is fit on
+        the full reference (SPY) history; momentum signals and pairs spread
+        z-scores are pre-computed from the full dataset.  On each day the
+        current regime is detected via an expanding window, and the
+        appropriate strategy's pre-computed signals are used.  When the
+        regime changes, open positions from the previous strategy are closed
+        at current prices before new ones are entered.
+
+        Regime mapping:
+          0 → Pairs Trading (mean-reverting market)
+          1 → Momentum (trending market)
+          2 → Cash (crisis / high-vol)
 
         Args:
             symbols_data: Dict mapping symbol → OHLCV DataFrame.
@@ -643,6 +735,8 @@ class BacktestEngine:
             DataFrame with daily portfolio value.
         """
         from strategy.regime_detector import RegimeDetector
+        from strategy.pairs_trading import PairsTrader
+        from strategy.momentum import MomentumTrader
         from config import settings
 
         self._initial_capital = initial_capital
@@ -651,106 +745,302 @@ class BacktestEngine:
         ref_symbol = "SPY" if "SPY" in symbols_data else next(iter(symbols_data))
         ref_df = symbols_data[ref_symbol]
 
+        # Fit regime detector on FULL reference data so it has complete context
         detector = RegimeDetector(n_components=getattr(settings, "REGIME_N_COMPONENTS", 3))
         detector.fit(ref_df)
 
-        # Collect regime per date using an expanding window
+        # Pre-compute momentum signals for all symbols using full history
+        mt = MomentumTrader()
+        momentum_signals: Dict[str, pd.DataFrame] = {}
+        for sym, df in symbols_data.items():
+            try:
+                sig_df = mt.generate_signals(df)
+                momentum_signals[sym] = sig_df
+            except Exception as exc:
+                logger.warning("Adaptive: momentum signals failed for %s: %s", sym, exc)
+
+        # Find cointegrated pairs using full history and pre-compute z-scores
+        pt = PairsTrader()
+        price_series_full = {
+            s: symbols_data[s]["Close"]
+            for s in symbols_data
+            if "Close" in symbols_data[s].columns
+        }
+        coint_pairs = pt.find_cointegrated_pairs(list(price_series_full.keys()), price_series_full)
+        capital_per_pair = initial_capital * getattr(settings, "CAPITAL_PER_PAIR", 0.10)
+
+        # Pre-compute full spread z-score series per pair
+        pair_spreads: Dict[str, Dict] = {}
+        for pa_sym, pb_sym, _pval, _corr, hr in coint_pairs:
+            if pa_sym in price_series_full and pb_sym in price_series_full:
+                pair_key = f"{pa_sym}/{pb_sym}"
+                spread_df = pt.calculate_spread(
+                    price_series_full[pa_sym], price_series_full[pb_sym], hr
+                )
+                pair_spreads[pair_key] = {
+                    "symbol_a": pa_sym,
+                    "symbol_b": pb_sym,
+                    "hedge": hr,
+                    "zscore": spread_df["spread_zscore"],
+                }
+
         all_dates = sorted(ref_df.index)
-        regimes: Dict = {}
-        for i, date in enumerate(all_dates):
-            if i < 30:
-                regimes[date] = 1
-            else:
-                regime, _ = detector.detect_regime(ref_df.iloc[:i + 1])
-                regimes[date] = regime
 
-        # Determine regime windows
-        regime_windows: List[Tuple] = []
-        prev_regime = None
-        window_start = None
-        for date in all_dates:
-            r = regimes[date]
-            if prev_regime is None:
-                prev_regime = r
-                window_start = date
-            elif r != prev_regime:
-                regime_windows.append((window_start, date, prev_regime))
-                prev_regime = r
-                window_start = date
-        if window_start is not None:
-            regime_windows.append((window_start, all_dates[-1], prev_regime))
-
-        # Sub-backtest for each regime window
         cash = initial_capital
         portfolio_values = []
+        current_regime: Optional[int] = None
 
-        for start, end, regime in regime_windows:
-            window_dates = [d for d in all_dates if start <= d <= end]
-            if not window_dates:
+        # Open position tracking
+        pairs_positions: Dict[str, Dict] = {}     # pair_key → pair position state
+        momentum_positions: Dict[str, Dict] = {}  # symbol → momentum position state
+
+        MARGIN_RATE = 1.5
+
+        def _close_all_pairs(close_date) -> None:
+            """Close all open pairs positions at close_date prices."""
+            nonlocal cash
+            for pk, pos in list(pairs_positions.items()):
+                pa_s = pos["symbol_a"]
+                pb_s = pos["symbol_b"]
+                pa_price = (
+                    float(symbols_data[pa_s].loc[close_date, "Close"])
+                    if pa_s in symbols_data and close_date in symbols_data[pa_s].index
+                    else None
+                )
+                pb_price = (
+                    float(symbols_data[pb_s].loc[close_date, "Close"])
+                    if pb_s in symbols_data and close_date in symbols_data[pb_s].index
+                    else None
+                )
+                if pa_price is None or pb_price is None:
+                    continue
+                side = pos["side"]
+                qty_a = pos["qty_a"]
+                qty_b = pos["qty_b"]
+                if side == 1:
+                    pnl = (pa_price - pos["entry_price_a"]) * qty_a + (pos["entry_price_b"] - pb_price) * qty_b
+                else:
+                    pnl = (pos["entry_price_a"] - pa_price) * qty_a + (pb_price - pos["entry_price_b"]) * qty_b
+                cash += pos["long_cost"] + pos["short_margin"] + pnl
+                self._trades.append({
+                    "entry_date": pos["entry_date"],
+                    "exit_date": close_date,
+                    "symbol": pk,
+                    "side": "long_spread" if side == 1 else "short_spread",
+                    "pnl": pnl,
+                    "exit_reason": "regime_change",
+                })
+            pairs_positions.clear()
+
+        def _close_all_momentum(close_date) -> None:
+            """Close all open momentum positions at close_date prices."""
+            nonlocal cash
+            for sym, pos in list(momentum_positions.items()):
+                if sym not in symbols_data or close_date not in symbols_data[sym].index:
+                    continue
+                price = float(symbols_data[sym].loc[close_date, "Close"])
+                qty = pos["qty"]
+                pnl = (price - pos["entry_price"]) * qty
+                cash += price * qty
+                self._trades.append({
+                    "entry_date": pos["entry_date"],
+                    "exit_date": close_date,
+                    "symbol": sym,
+                    "side": "long",
+                    "entry_price": pos["entry_price"],
+                    "exit_price": price,
+                    "qty": qty,
+                    "pnl": pnl,
+                    "exit_reason": "regime_change",
+                })
+            momentum_positions.clear()
+
+        top_n = mt.top_n
+
+        for i, date in enumerate(all_dates):
+            # Detect current regime using expanding window
+            if i < 30:
+                regime = 1  # default to normal until enough data
+            else:
+                regime, _ = detector.detect_regime(ref_df.iloc[: i + 1])
+
+            # On regime change, close all open positions from the previous strategy
+            if current_regime is not None and regime != current_regime:
+                _close_all_pairs(date)
+                _close_all_momentum(date)
+            current_regime = regime
+
+            # ---- Crisis: hold cash ----
+            if regime == 2:
+                portfolio_values.append({"date": date, "portfolio_value": cash, "cash": cash})
                 continue
 
-            window_data = {
-                sym: df.loc[df.index.isin(window_dates)]
-                for sym, df in symbols_data.items()
-                if not df.loc[df.index.isin(window_dates)].empty
-            }
+            # ---- Regime 0: Pairs Trading ----
+            if regime == 0:
+                pair_equity = 0.0
+                for pair_key, pair_info in pair_spreads.items():
+                    pa_sym = pair_info["symbol_a"]
+                    pb_sym = pair_info["symbol_b"]
+                    zscore_series = pair_info["zscore"]
+                    hr = pair_info["hedge"]
 
-            if regime == 2:
-                # Hold cash
-                for date in window_dates:
-                    portfolio_values.append({"date": date, "portfolio_value": cash, "cash": cash})
-            elif regime == 0:
-                # Pairs trading sub-backtest
-                pairs_bt = BacktestEngine()
-                symbols = list(window_data.keys())
-                from strategy.pairs_trading import PairsTrader
-                pt = PairsTrader()
-                price_series = {s: window_data[s]["Close"] for s in symbols if "Close" in window_data[s].columns}
-                coint_pairs = pt.find_cointegrated_pairs(symbols, price_series)
-                if coint_pairs:
-                    pairs_input = [
-                        {
-                            "symbol_a": pa, "symbol_b": pb,
-                            "price_a": price_series[pa], "price_b": price_series[pb],
-                            "hedge_ratio": hr,
-                        }
-                        for pa, pb, _, _, hr in coint_pairs
-                        if pa in price_series and pb in price_series
-                    ]
-                    if pairs_input:
-                        sub_port = pairs_bt.run_pairs_backtest(pairs_input, initial_capital=cash)
-                        if not sub_port.empty:
-                            trades = pairs_bt._trades
-                            self._trades.extend(trades)
-                            final_val = float(sub_port["portfolio_value"].iloc[-1])
-                            delta = final_val - cash
-                            for date in window_dates:
-                                if date in sub_port.index:
-                                    portfolio_values.append({"date": date, "portfolio_value": float(sub_port.loc[date, "portfolio_value"]), "cash": cash})
-                            cash = final_val
+                    if date not in zscore_series.index:
+                        continue
+                    z = float(zscore_series.loc[date])
+                    if pd.isna(z):
+                        continue
+
+                    pa_price = (
+                        float(symbols_data[pa_sym].loc[date, "Close"])
+                        if pa_sym in symbols_data and date in symbols_data[pa_sym].index
+                        else None
+                    )
+                    pb_price = (
+                        float(symbols_data[pb_sym].loc[date, "Close"])
+                        if pb_sym in symbols_data and date in symbols_data[pb_sym].index
+                        else None
+                    )
+                    if pa_price is None or pb_price is None:
+                        continue
+
+                    pos = pairs_positions.get(pair_key)
+                    if pos is not None:
+                        side = pos["side"]
+                        qty_a = pos["qty_a"]
+                        qty_b = pos["qty_b"]
+                        if side == 1:
+                            unrealized = (pa_price - pos["entry_price_a"]) * qty_a + (pos["entry_price_b"] - pb_price) * qty_b
+                        else:
+                            unrealized = (pos["entry_price_a"] - pa_price) * qty_a + (pb_price - pos["entry_price_b"]) * qty_b
+                        pair_equity += unrealized
+
+                        stop_hit = abs(z) > pt.zscore_stop
+                        mean_reverted = (side == 1 and z > -pt.zscore_exit) or (side == -1 and z < pt.zscore_exit)
+                        if stop_hit or mean_reverted:
+                            self._trades.append({
+                                "entry_date": pos["entry_date"],
+                                "exit_date": date,
+                                "symbol": pair_key,
+                                "side": "long_spread" if side == 1 else "short_spread",
+                                "pnl": unrealized,
+                                "exit_reason": "stop" if stop_hit else "mean_reversion",
+                            })
+                            cash += pos["long_cost"] + pos["short_margin"] + unrealized
+                            pair_equity -= unrealized
+                            pairs_positions.pop(pair_key, None)
+                    else:
+                        # Try to enter (no cooldown tracking needed in adaptive mode)
+                        if len(pairs_positions) >= getattr(settings, "MAX_SIMULTANEOUS_PAIRS", 3):
                             continue
-                # fallback: hold cash if no pairs found
-                for date in window_dates:
-                    portfolio_values.append({"date": date, "portfolio_value": cash, "cash": cash})
+                        if z < -pt.zscore_entry:
+                            side = 1
+                        elif z > pt.zscore_entry:
+                            side = -1
+                        else:
+                            continue
+
+                        half_cap = capital_per_pair / 2.0
+                        qty_a = max(1, int(half_cap / pa_price))
+                        qty_b = max(1, int(half_cap * hr / pb_price))
+                        long_cost = pa_price * qty_a
+                        short_margin = pb_price * qty_b * MARGIN_RATE
+                        total_cost = long_cost + short_margin
+                        if total_cost > cash:
+                            continue
+                        cash -= total_cost
+                        pairs_positions[pair_key] = {
+                            "entry_date": date,
+                            "entry_price_a": pa_price,
+                            "entry_price_b": pb_price,
+                            "qty_a": qty_a,
+                            "qty_b": qty_b,
+                            "side": side,
+                            "symbol_a": pa_sym,
+                            "symbol_b": pb_sym,
+                            "long_cost": long_cost,
+                            "short_margin": short_margin,
+                        }
+                portfolio_values.append({"date": date, "portfolio_value": cash + pair_equity, "cash": cash})
+
+            # ---- Regime 1: Momentum ----
             else:
-                # Momentum sub-backtest
-                mom_bt = BacktestEngine()
-                sub_port = mom_bt.run_momentum_backtest(window_data, initial_capital=cash)
-                if not sub_port.empty:
-                    self._trades.extend(mom_bt._trades)
-                    for date in window_dates:
-                        if date in sub_port.index:
-                            portfolio_values.append({"date": date, "portfolio_value": float(sub_port.loc[date, "portfolio_value"]), "cash": cash})
-                    cash = float(sub_port["portfolio_value"].iloc[-1])
-                else:
-                    for date in window_dates:
-                        portfolio_values.append({"date": date, "portfolio_value": cash, "cash": cash})
+                # Check trailing stops & exit signals
+                for sym in list(momentum_positions.keys()):
+                    if sym not in momentum_signals or date not in momentum_signals[sym].index:
+                        continue
+                    row = momentum_signals[sym].loc[date]
+                    price = float(row["Close"])
+                    sig = int(row.get("signal", 0))
+                    pos = momentum_positions[sym]
+                    stop = float(row.get("trailing_stop", np.nan))
+
+                    if pos["highest"] < price:
+                        pos["highest"] = price
+
+                    stop_hit = (not pd.isna(stop)) and (price <= stop)
+                    exit_signal = sig == -1
+                    if stop_hit or exit_signal:
+                        qty = pos["qty"]
+                        pnl = (price - pos["entry_price"]) * qty
+                        cash += price * qty
+                        self._trades.append({
+                            "entry_date": pos["entry_date"],
+                            "exit_date": date,
+                            "symbol": sym,
+                            "side": "long",
+                            "entry_price": pos["entry_price"],
+                            "exit_price": price,
+                            "qty": qty,
+                            "pnl": pnl,
+                            "exit_reason": "trailing_stop" if stop_hit else "signal",
+                        })
+                        del momentum_positions[sym]
+
+                # Compute current equity for compounding-based sizing
+                equity = sum(
+                    float(momentum_signals[sym].loc[date, "Close"]) * pos["qty"]
+                    for sym, pos in momentum_positions.items()
+                    if sym in momentum_signals and date in momentum_signals[sym].index
+                )
+                portfolio_value_now = cash + equity
+
+                # Enter new momentum positions
+                held_count = len(momentum_positions)
+                for sym, sig_df in momentum_signals.items():
+                    if held_count >= top_n:
+                        break
+                    if sym in momentum_positions or date not in sig_df.index:
+                        continue
+                    row = sig_df.loc[date]
+                    sig = int(row.get("signal", 0))
+                    strength = float(row.get("signal_strength", 0))
+                    if sig == 1 and strength > 0:
+                        price = float(row["Close"])
+                        alloc = (portfolio_value_now / top_n) * strength
+                        qty = max(1, int(alloc / price))
+                        cost = price * qty
+                        if cost > cash:
+                            continue
+                        cash -= cost
+                        momentum_positions[sym] = {
+                            "entry_date": date,
+                            "entry_price": price,
+                            "qty": qty,
+                            "highest": price,
+                        }
+                        held_count += 1
+
+                equity = sum(
+                    float(momentum_signals[sym].loc[date, "Close"]) * pos["qty"]
+                    for sym, pos in momentum_positions.items()
+                    if sym in momentum_signals and date in momentum_signals[sym].index
+                )
+                portfolio_values.append({"date": date, "portfolio_value": cash + equity, "cash": cash})
 
         if not portfolio_values:
             return pd.DataFrame()
 
         self._portfolio = pd.DataFrame(portfolio_values).set_index("date")
-        # Deduplicate dates (keep last)
         self._portfolio = self._portfolio[~self._portfolio.index.duplicated(keep="last")]
 
         # Set benchmark from reference symbol
@@ -758,4 +1048,77 @@ class BacktestEngine:
         if len(close_prices) > 0 and close_prices.iloc[0] != 0:
             benchmark_shares = initial_capital / close_prices.iloc[0]
             self._benchmark = close_prices * benchmark_shares
+        return self._portfolio
+
+    # ------------------------------------------------------------------
+    # Combined Portfolio Backtest
+    # ------------------------------------------------------------------
+
+    def run_combined_backtest(
+        self,
+        pairs_data: List[Dict],
+        symbols_data: Dict[str, pd.DataFrame],
+        initial_capital: float = 100_000.0,
+    ) -> pd.DataFrame:
+        """Backtest a combined portfolio: 50% momentum, 30% pairs, 20% cash.
+
+        Runs both sub-strategies in parallel with their allocated capitals and
+        combines the daily portfolio values:
+          combined_value = momentum_portfolio + pairs_portfolio + cash_reserve
+
+        Args:
+            pairs_data: List of pair dicts (same format as run_pairs_backtest).
+            symbols_data: Dict mapping symbol → OHLCV DataFrame.
+            initial_capital: Total starting capital.
+
+        Returns:
+            DataFrame with daily combined portfolio value.
+        """
+        mom_capital = initial_capital * 0.5
+        pairs_capital = initial_capital * 0.3
+        cash_reserve = initial_capital * 0.2
+
+        # Run momentum sub-strategy
+        mom_engine = BacktestEngine()
+        mom_portfolio = mom_engine.run_momentum_backtest(symbols_data, initial_capital=mom_capital)
+
+        # Run pairs sub-strategy
+        pairs_engine = BacktestEngine()
+        pairs_portfolio = pairs_engine.run_pairs_backtest(pairs_data, initial_capital=pairs_capital)
+
+        self._initial_capital = initial_capital
+        self._trades = mom_engine._trades + pairs_engine._trades
+
+        # Merge both date sets
+        mom_dates = set(mom_portfolio.index.tolist()) if not mom_portfolio.empty else set()
+        pairs_dates = set(pairs_portfolio.index.tolist()) if not pairs_portfolio.empty else set()
+        all_dates = sorted(mom_dates | pairs_dates)
+
+        if not all_dates:
+            return pd.DataFrame()
+
+        portfolio_values = []
+        for date in all_dates:
+            mom_val = (
+                float(mom_portfolio.loc[date, "portfolio_value"])
+                if not mom_portfolio.empty and date in mom_portfolio.index
+                else mom_capital
+            )
+            pairs_val = (
+                float(pairs_portfolio.loc[date, "portfolio_value"])
+                if not pairs_portfolio.empty and date in pairs_portfolio.index
+                else pairs_capital
+            )
+            total_val = mom_val + pairs_val + cash_reserve
+            portfolio_values.append({"date": date, "portfolio_value": total_val, "cash": cash_reserve})
+
+        self._portfolio = pd.DataFrame(portfolio_values).set_index("date")
+
+        # Set benchmark from reference symbol
+        ref_symbol = "SPY" if "SPY" in symbols_data else next(iter(symbols_data))
+        close_prices = symbols_data[ref_symbol]["Close"].reindex(self._portfolio.index).ffill()
+        if len(close_prices) > 0 and close_prices.iloc[0] != 0:
+            benchmark_shares = initial_capital / close_prices.iloc[0]
+            self._benchmark = close_prices * benchmark_shares
+
         return self._portfolio

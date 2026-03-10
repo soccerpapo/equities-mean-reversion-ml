@@ -188,7 +188,7 @@ def run_backtest(
 
 
 def run_compare(symbols: list, years: int = 2) -> None:
-    """Run all six approaches on the same data and print a comparison table.
+    """Run all seven approaches on the same data and print a comparison table.
 
     Approaches:
       1. Pure Statistical (no ML, no regime detection, fixed stops)
@@ -197,12 +197,14 @@ def run_compare(symbols: list, years: int = 2) -> None:
       4. Pairs Trading
       5. Momentum
       6. Adaptive (Regime Switch)
+      7. Combined Portfolio (50% momentum + 30% pairs + 20% cash)
 
     Args:
         symbols: List of ticker symbols to test
         years: Number of years of historical data to use
     """
     import pandas as pd
+    from typing import Dict, List
     from data.fetcher import DataFetcher
     from features.indicators import IndicatorEngine
     from strategy.signals import SignalGenerator
@@ -286,12 +288,13 @@ def run_compare(symbols: list, years: int = 2) -> None:
         })
 
     # ---- Path D: Pairs Trading (cross-symbol, run once) ----
+    pairs_input_compare: List[Dict] = []
     if len(all_data) >= 2:
         pt = PairsTrader()
         price_series = {s: all_data[s]["Close"] for s in all_data}
         coint_pairs = pt.find_cointegrated_pairs(list(all_data.keys()), price_series)
         if coint_pairs:
-            pairs_input = [
+            pairs_input_compare = [
                 {
                     "symbol_a": pa, "symbol_b": pb,
                     "price_a": price_series[pa], "price_b": price_series[pb],
@@ -301,7 +304,7 @@ def run_compare(symbols: list, years: int = 2) -> None:
                 if pa in price_series and pb in price_series
             ]
             bt_d = BacktestEngine()
-            bt_d.run_pairs_backtest(pairs_input, initial_capital=100_000.0)
+            bt_d.run_pairs_backtest(pairs_input_compare, initial_capital=100_000.0)
             report_d = bt_d.get_performance_report()
             report_d["approach"] = "Pairs Trading"
             comparison_rows.append(report_d)
@@ -319,6 +322,13 @@ def run_compare(symbols: list, years: int = 2) -> None:
     report_f = bt_f.get_performance_report()
     report_f["approach"] = "Adaptive (Regime Switch)"
     comparison_rows.append(report_f)
+
+    # ---- Path G: Combined Portfolio (50% momentum + 30% pairs + 20% cash) ----
+    bt_g = BacktestEngine()
+    bt_g.run_combined_backtest(pairs_input_compare, all_data, initial_capital=100_000.0)
+    report_g = bt_g.get_performance_report()
+    report_g["approach"] = "Combined Portfolio"
+    comparison_rows.append(report_g)
 
     BacktestEngine.print_comparison_table(comparison_rows)
 
@@ -437,6 +447,57 @@ def run_adaptive_backtest(symbols: list, years: int = 2) -> None:
     bt.plot_results(output_dir=".")
 
     print("\n=== Adaptive (Regime-Switching) Backtest Report ===")
+    for k, v in report.items():
+        print(f"  {k}: {v}")
+
+
+def run_combined_backtest(symbols: list, years: int = 2) -> None:
+    """Run combined portfolio backtest (50% momentum + 30% pairs + 20% cash).
+
+    Args:
+        symbols: List of ticker symbols to trade.
+        years: Number of years of historical data.
+    """
+    from data.fetcher import DataFetcher
+    from strategy.pairs_trading import PairsTrader
+    from backtest.engine import BacktestEngine
+
+    period = f"{years}y"
+    fetcher = DataFetcher()
+    data_dict = {}
+    for sym in symbols:
+        df = fetcher.fetch_historical(sym, period=period)
+        if not df.empty:
+            data_dict[sym] = df
+
+    if not data_dict:
+        logger.error("No data fetched for combined backtest.")
+        return
+
+    pt = PairsTrader()
+    price_series = {sym: df["Close"] for sym, df in data_dict.items()}
+    coint_pairs = pt.find_cointegrated_pairs(list(data_dict.keys()), price_series)
+
+    pairs_input = (
+        [
+            {
+                "symbol_a": pa, "symbol_b": pb,
+                "price_a": price_series[pa], "price_b": price_series[pb],
+                "hedge_ratio": hr,
+            }
+            for pa, pb, _, _, hr in coint_pairs
+            if pa in price_series and pb in price_series
+        ]
+        if coint_pairs else []
+    )
+
+    bt = BacktestEngine()
+    bt.run_combined_backtest(pairs_input, data_dict, initial_capital=100_000.0)
+    report = bt.get_performance_report()
+    bt.plot_results(output_dir=".")
+
+    print("\n=== Combined Portfolio Backtest Report ===")
+    print("  Allocation: 50% Momentum + 30% Pairs + 20% Cash Reserve")
     for k, v in report.items():
         print(f"  {k}: {v}")
 
@@ -602,7 +663,7 @@ def main():
     )
     parser.add_argument(
         "--strategy",
-        choices=["mean_reversion", "pairs", "momentum", "adaptive", "all"],
+        choices=["mean_reversion", "pairs", "momentum", "adaptive", "combined", "all"],
         default="all",
         help=(
             "Strategy to run. 'all' runs everything in compare mode. "
@@ -626,6 +687,8 @@ def main():
             run_momentum_backtest(symbols, years=years)
         if strategy in ("adaptive", "all"):
             run_adaptive_backtest(symbols, years=years)
+        if strategy in ("combined", "all"):
+            run_combined_backtest(symbols, years=years)
 
     elif args.mode == "compare":
         symbols = args.symbols or settings.SYMBOLS
