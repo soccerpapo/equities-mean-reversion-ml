@@ -96,7 +96,9 @@ class BacktestEngine:
 
         total_return = (values.iloc[-1] / self._initial_capital) - 1
         n_years = len(returns) / 252
-        if n_years >= 0.1:
+        # Require at least ~25 trading days to produce a meaningful annualized figure
+        MIN_YEARS_FOR_ANNUALIZATION = 0.1
+        if n_years >= MIN_YEARS_FOR_ANNUALIZATION:
             ann_return = (1 + total_return) ** (1 / n_years) - 1
         else:
             ann_return = float("nan")
@@ -118,7 +120,8 @@ class BacktestEngine:
             win_rate = len(wins) / num_trades
             avg_win = wins["pnl"].mean() if len(wins) > 0 else 0.0
             avg_loss = losses["pnl"].mean() if len(losses) > 0 else 0.0
-            profit_factor = (wins["pnl"].sum() / abs(losses["pnl"].sum())) if losses["pnl"].sum() != 0 else float("inf")
+            # None indicates no losing trades (perfect record); callers should handle this sentinel
+            profit_factor = (wins["pnl"].sum() / abs(losses["pnl"].sum())) if losses["pnl"].sum() != 0 else None
 
             outcomes = (trades_df["pnl"] > 0).astype(int).tolist()
             max_win_streak = max_loss_streak = cur_win = cur_loss = 0

@@ -117,7 +117,8 @@ class RiskManager:
         losses = returns[returns < 0]
 
         win_rate = len(wins) / len(returns) if len(returns) > 0 else 0.0
-        profit_factor = (wins.sum() / abs(losses.sum())) if losses.sum() != 0 else float("inf")
+        # None indicates no losing trades (perfect record); callers should handle this sentinel
+        profit_factor = (wins.sum() / abs(losses.sum())) if losses.sum() != 0 else None
 
         mean_return = returns.mean()
         std_return = returns.std()
