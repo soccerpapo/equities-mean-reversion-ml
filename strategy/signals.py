@@ -17,9 +17,10 @@ class SignalGenerator:
         """Generate BUY/SELL/HOLD signals based on multiple indicator confirmation.
 
         Signal logic:
-        - BUY: z-score crosses below -threshold, RSI oversold, price near lower BB
-        - SELL: z-score crosses above +threshold, RSI overbought, price near upper BB
-        - Signal strength is a 0-1 float based on number of confirmations
+        - BUY: z-score crosses below -threshold PLUS at least 1 of 3 other confirmations
+          (RSI oversold, price near lower BB, high volume). Signal strength 0-1.
+        - SELL: z-score crosses above +threshold PLUS at least 1 of 3 other confirmations.
+        - Momentum divergence BUY: price making new low while RSI makes higher low.
 
         Args:
             df: DataFrame with computed indicators (or raw OHLCV)
@@ -62,18 +63,37 @@ class SignalGenerator:
             sell_conditions["volume"] = result["volume_zscore"] > 1.0
 
         n_conditions = len(buy_conditions.columns)
+        # Confirmations beyond z-score (3 optional conditions)
+        n_optional = n_conditions - 1
 
         buy_score = buy_conditions.sum(axis=1) / n_conditions
         sell_score = sell_conditions.sum(axis=1) / n_conditions
 
-        # Require z-score as mandatory condition plus at least half confirmed
-        buy_signal = buy_conditions["zscore"] & (buy_score >= 0.5)
-        sell_signal = sell_conditions["zscore"] & (sell_score >= 0.5)
+        # Require z-score (mandatory) + at least 1 of the optional confirmations (2 out of 4 total)
+        min_optional = 1
+        buy_optional_met = buy_conditions.drop(columns=["zscore"]).sum(axis=1) >= min_optional
+        sell_optional_met = sell_conditions.drop(columns=["zscore"]).sum(axis=1) >= min_optional
+
+        buy_signal = buy_conditions["zscore"] & buy_optional_met
+        sell_signal = sell_conditions["zscore"] & sell_optional_met
 
         signals[buy_signal] = 1
         signals[sell_signal] = -1
         signal_strength[buy_signal] = buy_score[buy_signal]
         signal_strength[sell_signal] = sell_score[sell_signal]
+
+        # Momentum divergence: price making new 10-day low but RSI is higher than
+        # it was when price last made a 10-day low (bullish divergence proxy).
+        # Use a 5-day lagged RSI comparison to detect RSI making a higher low
+        # while price makes a new low.
+        if "rsi" in result.columns:
+            close = result["Close"]
+            rsi = result["rsi"]
+            price_new_low = close == close.rolling(window=10).min()
+            rsi_higher_than_lagged = rsi > rsi.shift(5)
+            divergence_buy = price_new_low & rsi_higher_than_lagged & (signals == 0)
+            signals[divergence_buy] = 1
+            signal_strength[divergence_buy] = 0.4
 
         result["signal"] = signals
         result["signal_strength"] = signal_strength

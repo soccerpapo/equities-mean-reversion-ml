@@ -19,6 +19,7 @@ class BacktestEngine:
         self._portfolio: Optional[pd.DataFrame] = None
         self._trades: list = []
         self._initial_capital: float = 100_000.0
+        self._benchmark: Optional[pd.Series] = None
 
     def run(
         self, df: pd.DataFrame, signals_df: pd.DataFrame, initial_capital: float = 100_000.0
@@ -41,6 +42,15 @@ class BacktestEngine:
         entry_price = 0.0
         entry_date = None
         portfolio_values = []
+
+        # Compute buy-and-hold benchmark using Close prices
+        close_prices = signals_df["Close"] if "Close" in signals_df.columns else df["Close"]
+        first_price = close_prices.iloc[0]
+        if first_price and first_price != 0:
+            benchmark_shares = initial_capital / first_price
+            self._benchmark = close_prices * benchmark_shares
+        else:
+            self._benchmark = None
 
         for idx, row in signals_df.iterrows():
             price = row["Close"] if "Close" in row.index else df.loc[idx, "Close"]
@@ -83,10 +93,10 @@ class BacktestEngine:
         return self._portfolio
 
     def get_performance_report(self) -> Dict:
-        """Return comprehensive performance metrics.
+        """Return comprehensive performance metrics including benchmark comparison.
 
         Returns:
-            Dict with return, Sharpe, Sortino, drawdown, win/loss stats
+            Dict with return, Sharpe, Sortino, drawdown, win/loss stats, and alpha
         """
         if self._portfolio is None or self._portfolio.empty:
             return {}
@@ -138,7 +148,14 @@ class BacktestEngine:
             win_rate = avg_win = avg_loss = profit_factor = 0.0
             max_win_streak = max_loss_streak = 0
 
-        return {
+        # Benchmark (buy-and-hold) metrics
+        benchmark_return = float("nan")
+        alpha = float("nan")
+        if self._benchmark is not None and len(self._benchmark) > 0:
+            benchmark_return = (self._benchmark.iloc[-1] / self._initial_capital) - 1
+            alpha = total_return - benchmark_return
+
+        report = {
             "total_return": round(total_return, 4),
             "annualized_return": round(ann_return, 4),
             "sharpe_ratio": round(sharpe, 4),
@@ -152,9 +169,13 @@ class BacktestEngine:
             "longest_win_streak": max_win_streak,
             "longest_loss_streak": max_loss_streak,
         }
+        if not np.isnan(benchmark_return):
+            report["benchmark_return"] = round(float(benchmark_return), 4)
+            report["alpha"] = round(float(alpha), 4)
+        return report
 
     def plot_results(self, output_dir: str = ".") -> None:
-        """Generate and save equity curve and drawdown charts.
+        """Generate and save equity curve and drawdown charts with benchmark.
 
         Args:
             output_dir: Directory to save chart files
@@ -170,8 +191,10 @@ class BacktestEngine:
 
         fig, axes = plt.subplots(2, 1, figsize=(12, 8))
 
-        axes[0].plot(values.index, values, label="Portfolio Value", color="blue")
+        axes[0].plot(values.index, values, label="Strategy", color="blue")
         axes[0].axhline(self._initial_capital, color="gray", linestyle="--", label="Initial Capital")
+        if self._benchmark is not None:
+            axes[0].plot(self._benchmark.index, self._benchmark, label="Buy & Hold", color="orange", alpha=0.7)
         axes[0].set_title("Equity Curve")
         axes[0].set_ylabel("Portfolio Value ($)")
         axes[0].legend()
