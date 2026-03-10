@@ -162,15 +162,58 @@ class IndicatorEngine:
             DataFrame with all indicator columns added
         """
         result = df.copy()
-        result["zscore"] = self.compute_zscore(result["Close"])
+        close = result["Close"]
+        returns = close.pct_change()
+
+        result["zscore"] = self.compute_zscore(close)
         result = self.compute_bollinger_bands(result)
-        result["rsi"] = self.compute_rsi(result["Close"])
-        macd_df = self.compute_macd(result["Close"])
+        result["rsi"] = self.compute_rsi(close)
+        macd_df = self.compute_macd(close)
         result["macd"] = macd_df["macd"]
         result["macd_signal"] = macd_df["macd_signal"]
         result["macd_hist"] = macd_df["macd_hist"]
         result["atr"] = self.compute_atr(result)
         result["volume_zscore"] = self.compute_volume_zscore(result["Volume"])
-        result["volatility"] = self.compute_rolling_volatility(result["Close"])
-        result["roc"] = self.compute_roc(result["Close"])
+        result["volatility"] = self.compute_rolling_volatility(close)
+        result["roc"] = self.compute_roc(close)
+
+        # Lagged returns
+        for lag in [1, 2, 3, 5, 10]:
+            result[f"return_lag_{lag}"] = returns.shift(lag)
+
+        # Rolling skewness and kurtosis of returns
+        result["skewness_20"] = returns.rolling(window=20).skew()
+        result["kurtosis_20"] = returns.rolling(window=20).kurt()
+
+        # Volatility ratio: short-term vol / long-term vol
+        vol_5 = returns.rolling(window=5).std()
+        vol_20 = returns.rolling(window=20).std()
+        result["vol_ratio"] = vol_5 / vol_20.replace(0, np.nan)
+
+        # Volume trend: 5-day vs 20-day volume MA ratio
+        vol_ma5 = result["Volume"].rolling(window=5).mean()
+        vol_ma20 = result["Volume"].rolling(window=20).mean()
+        result["volume_trend"] = vol_ma5 / vol_ma20.replace(0, np.nan)
+
+        # Price distance from SMA (50-day and 200-day) as percentage
+        sma_50 = close.rolling(window=50).mean()
+        sma_200 = close.rolling(window=200).mean()
+        result["dist_sma50"] = (close - sma_50) / sma_50.replace(0, np.nan)
+        result["dist_sma200"] = (close - sma_200) / sma_200.replace(0, np.nan)
+
+        # Mean reversion speed: autocorrelation of returns (negative = mean reverting)
+        result["autocorr_10"] = returns.rolling(window=20).apply(
+            lambda x: x.autocorr(lag=1) if len(x) > 1 else np.nan, raw=False
+        )
+
+        # Intraday range: (High - Low) / Close
+        result["intraday_range"] = (result["High"] - result["Low"]) / close.replace(0, np.nan)
+
+        # Gap: (Open - Previous Close) / Previous Close
+        result["gap"] = (result["Open"] - close.shift(1)) / close.shift(1).replace(0, np.nan)
+
+        # Day of week and month
+        result["day_of_week"] = result.index.dayofweek
+        result["month"] = result.index.month
+
         return result
