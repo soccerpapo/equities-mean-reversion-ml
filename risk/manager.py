@@ -137,5 +137,5 @@ class RiskManager:
             "sortino_ratio": round(sortino, 4),
             "max_drawdown": round(float(max_dd), 4),
             "win_rate": round(win_rate, 4),
-            "profit_factor": round(profit_factor, 4),
+            "profit_factor": round(profit_factor, 4) if profit_factor is not None else None,
         }

@@ -147,7 +147,7 @@ class BacktestEngine:
             "win_rate": round(win_rate, 4),
             "avg_win": round(avg_win, 4),
             "avg_loss": round(avg_loss, 4),
-            "profit_factor": round(profit_factor, 4),
+            "profit_factor": round(profit_factor, 4) if profit_factor is not None else None,
             "num_trades": num_trades,
             "longest_win_streak": max_win_streak,
             "longest_loss_streak": max_loss_streak,
