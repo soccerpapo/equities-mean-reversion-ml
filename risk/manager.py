@@ -141,6 +141,63 @@ class RiskManager:
         """
         return current_positions >= max_positions
 
+    def check_pair_risk(self, spread_zscore: float, max_zscore: float = 3.0) -> bool:
+        """Check whether the spread z-score has exceeded the stop-loss threshold.
+
+        Args:
+            spread_zscore: Current z-score of the pair spread.
+            max_zscore: Maximum allowed absolute z-score before triggering stop loss.
+
+        Returns:
+            True if the spread has diverged beyond the stop threshold.
+        """
+        return abs(spread_zscore) > max_zscore
+
+    def calculate_trailing_stop(
+        self,
+        entry_price: float,
+        highest_since_entry: float,
+        atr: float,
+        multiplier: float = 2.0,
+    ) -> float:
+        """Calculate the trailing stop price for a long position.
+
+        The stop is set at ``highest_since_entry - multiplier * atr``, but
+        never below ``entry_price - multiplier * atr`` (initial stop).
+
+        Args:
+            entry_price: Price at trade entry.
+            highest_since_entry: Highest close price recorded since entry.
+            atr: Current Average True Range.
+            multiplier: ATR multiplier for stop distance.
+
+        Returns:
+            Trailing stop price.  Returns ``entry_price * 0.95`` as a fallback
+            when ATR is zero or negative.
+        """
+        if atr <= 0:
+            return entry_price * 0.95
+        initial_stop = entry_price - multiplier * atr
+        trailing_stop = highest_since_entry - multiplier * atr
+        return max(initial_stop, trailing_stop)
+
+    def check_correlation_breakdown(
+        self, pair_correlation: float, min_correlation: float = 0.5
+    ) -> bool:
+        """Check if a pair's correlation has dropped below the minimum threshold.
+
+        A significant drop in correlation may indicate the pair is no longer
+        cointegrated and positions should be closed.
+
+        Args:
+            pair_correlation: Current rolling correlation between the two legs.
+            min_correlation: Minimum acceptable correlation (default 0.5).
+
+        Returns:
+            True if correlation has broken down (below min_correlation).
+        """
+        return pair_correlation < min_correlation
+
     def get_risk_metrics(self, trades_df: pd.DataFrame) -> dict:
         """Calculate portfolio risk metrics.
 

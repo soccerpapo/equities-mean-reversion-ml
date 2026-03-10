@@ -46,3 +46,26 @@ MIN_SIGNAL_STRENGTH = 0.5
 
 # Regime detection
 REGIME_N_COMPONENTS = 3  # Number of regimes to detect
+
+# Pairs Trading
+PAIRS_ZSCORE_ENTRY = 2.0
+PAIRS_ZSCORE_EXIT = 0.5
+PAIRS_ZSCORE_STOP = 3.0
+PAIRS_LOOKBACK = 60  # Rolling window for spread z-score
+PAIRS_COINT_PVALUE = 0.05  # Max p-value for cointegration
+CAPITAL_PER_PAIR = 0.2  # 20% of portfolio per pair
+
+# Momentum
+MOMENTUM_SMA_FAST = 50
+MOMENTUM_SMA_SLOW = 200
+MOMENTUM_ADX_THRESHOLD = 25
+MOMENTUM_TOP_N = 3  # Number of top stocks to hold
+TRAILING_STOP_ATR_MULT = 2.0
+
+# Adaptive Strategy
+REGIME_ALLOCATIONS = {
+    0: {"pairs": 0.7, "momentum": 0.2, "cash": 0.1},  # Mean-reverting
+    1: {"pairs": 0.2, "momentum": 0.7, "cash": 0.1},  # Trending
+    2: {"pairs": 0.0, "momentum": 0.0, "cash": 1.0},  # Crisis
+}
+TRANSITION_DAYS = 3

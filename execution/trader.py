@@ -209,3 +209,86 @@ class AlpacaTrader:
         except Exception as e:
             logger.error(f"Error checking market hours: {e}")
             return False
+
+    def place_pairs_order(
+        self,
+        symbol_a: str,
+        qty_a: int,
+        side_a: str,
+        symbol_b: str,
+        qty_b: int,
+        side_b: str,
+    ) -> Optional[Dict]:
+        """Execute both legs of a pairs trade atomically.
+
+        Submits orders for both legs sequentially.  If the second leg fails
+        the first leg has already been submitted; callers should monitor for
+        partial fills.
+
+        Args:
+            symbol_a: First leg ticker.
+            qty_a: Quantity for the first leg.
+            side_a: 'buy' or 'sell' for the first leg.
+            symbol_b: Second leg ticker.
+            qty_b: Quantity for the second leg.
+            side_b: 'buy' or 'sell' for the second leg.
+
+        Returns:
+            Dict with 'leg_a' and 'leg_b' order dicts, or None on failure.
+        """
+        try:
+            self._require_api()
+            order_a = self.place_order(symbol_a, qty_a, side_a)
+            order_b = self.place_order(symbol_b, qty_b, side_b)
+            if order_a is None or order_b is None:
+                logger.warning("Pairs order partially failed: leg_a=%s, leg_b=%s", order_a, order_b)
+                return None
+            logger.info(
+                "Pairs order placed: %s %d %s / %s %d %s",
+                side_a, qty_a, symbol_a, side_b, qty_b, symbol_b,
+            )
+            return {"leg_a": order_a, "leg_b": order_b}
+        except Exception as e:
+            logger.error(f"Error placing pairs order: {e}")
+            return None
+
+    def place_trailing_stop(
+        self, symbol: str, qty: int, trail_pct: float
+    ) -> Optional[Dict]:
+        """Submit a trailing stop order to protect momentum profits.
+
+        Args:
+            symbol: Ticker symbol.
+            qty: Number of shares.
+            trail_pct: Trailing percentage (e.g. 0.02 for 2%).
+
+        Returns:
+            Order dict or None on failure.
+        """
+        try:
+            self._require_api()
+            trail_price = round(trail_pct * 100, 2)  # Alpaca expects percentage as numeric
+            order = self._api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side="sell",
+                type="trailing_stop",
+                time_in_force="gtc",
+                trail_percent=str(trail_price),
+            )
+            logger.info(f"Trailing stop placed: sell {qty} {symbol} trail={trail_pct:.2%}")
+            return {"id": order.id, "symbol": symbol, "qty": qty, "side": "sell", "trail_pct": trail_pct}
+        except Exception as e:
+            logger.error(f"Error placing trailing stop: {e}")
+            return None
+
+    def get_portfolio_value(self) -> Optional[float]:
+        """Return the current total portfolio value (equity).
+
+        Returns:
+            Portfolio equity as a float, or None on failure.
+        """
+        acct = self.get_account()
+        if acct is not None:
+            return acct.get("equity")
+        return None
