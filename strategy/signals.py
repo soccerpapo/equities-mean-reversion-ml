@@ -152,8 +152,8 @@ class SignalGenerator:
             sell_conditions[k].astype(float) * w for k, w in available_weights.items()
         ) / total_weight
 
-        # Require z-score (mandatory) + at least 1 of the optional confirmations
-        min_optional = 1
+        # Require z-score (mandatory) + at least 2 of the optional confirmations
+        min_optional = 2
         optional_cols = [c for c in buy_conditions.columns if c != "zscore"]
         has_optional = len(optional_cols) > 0
         if has_optional:

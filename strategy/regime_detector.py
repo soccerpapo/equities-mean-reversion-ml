@@ -40,6 +40,12 @@ class RegimeDetector:
         self._scaler = StandardScaler()
         self._sorted_gmm_labels: list[int] | None = None  # _sorted_gmm_labels[i] = GMM label ranked i-th by vol
         self._is_fitted = False
+        # Regime persistence filter state
+        self._confirmed_regime: int | None = None   # last regime that passed persistence check
+        self._candidate_regime: int | None = None   # regime being counted toward persistence
+        self._candidate_count: int = 0              # consecutive days seen for candidate_regime
+        self._persistence_threshold: int = 5        # days required before confirming a switch
+        self._confidence_threshold: float = 0.7     # minimum confidence to consider a regime change
 
     # ------------------------------------------------------------------
     # Public API
@@ -79,6 +85,10 @@ class RegimeDetector:
         self._sorted_gmm_labels = list(np.argsort(mean_vol))
 
         self._is_fitted = True
+        # Reset persistence filter state when model is re-fitted
+        self._confirmed_regime = None
+        self._candidate_regime = None
+        self._candidate_count = 0
         logger.info(
             "RegimeDetector fitted. Vol means per regime (sorted low→high): %s",
             [round(mean_vol[k], 5) for k in self._sorted_gmm_labels],
@@ -86,14 +96,20 @@ class RegimeDetector:
         return self
 
     def detect_regime(self, df: pd.DataFrame) -> tuple[int, float]:
-        """Detect the current market regime.
+        """Detect the current market regime with persistence and confidence filtering.
+
+        Applies two layers of filtering to reduce noisy regime switches:
+          1. Confidence threshold: only consider a regime change when the GMM
+             posterior probability for the new regime exceeds 0.7.
+          2. Persistence filter: require the same regime to be detected for at
+             least 5 consecutive calls before confirming the switch.
 
         Args:
             df: OHLCV DataFrame (requires at least 30 rows for feature calculation).
 
         Returns:
             Tuple of (regime_label, confidence) where regime_label is 0, 1, or 2
-            and confidence is the posterior probability for that regime.
+            and confidence is the posterior probability for the raw detected regime.
             Falls back to regime 1 (normal) if model is not fitted.
         """
         if not self._is_fitted or self._gmm is None:
@@ -111,8 +127,30 @@ class RegimeDetector:
         confidence = float(proba[raw_label])
 
         # Map raw GMM label to standardised regime (0=low-vol, 1=normal, 2=high-vol)
-        regime = self._sorted_gmm_labels.index(raw_label)
-        return regime, confidence
+        raw_regime = self._sorted_gmm_labels.index(raw_label)
+
+        # Apply confidence threshold: if confidence is too low, keep the current
+        # confirmed regime (or default to normal if no regime confirmed yet).
+        if confidence < self._confidence_threshold:
+            if self._confirmed_regime is not None:
+                return self._confirmed_regime, confidence
+            return 1, confidence
+
+        # Apply persistence filter: only confirm a new regime after seeing it
+        # for at least _persistence_threshold consecutive calls.
+        if raw_regime == self._candidate_regime:
+            self._candidate_count += 1
+        else:
+            self._candidate_regime = raw_regime
+            self._candidate_count = 1
+
+        if self._candidate_count >= self._persistence_threshold:
+            self._confirmed_regime = self._candidate_regime
+
+        # Return the confirmed regime (or default until enough data accumulated).
+        if self._confirmed_regime is not None:
+            return self._confirmed_regime, confidence
+        return 1, confidence
 
     def get_position_multiplier(self, regime: int) -> float:
         """Return the position size multiplier for a given regime.
