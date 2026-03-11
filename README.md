@@ -32,14 +32,15 @@ A production-ready algorithmic trading system that combines classical mean rever
 - **Trend Filter**: 200-day SMA filter — only buy dips in uptrends, sell rips in downtrends
 - **Volatility Regime Filter**: Trade only when volatility is between 20th–80th percentile
 - **ML Signal Filter**: LightGBM classifier trained on multiple symbols (togglable with `--no-ml`)
-- **Pairs Trading** ⭐: Market-neutral cointegration-based mean reversion
-- **Momentum/Trend Following** ⭐: Multi-factor momentum scoring with trailing ATR stops
-- **Adaptive Strategy** ⭐: Regime detection drives dynamic allocation between all strategies
+- **Pairs Trading** ⭐: Market-neutral cointegration-based mean reversion with risk controls (max simultaneous pairs, per-pair loss limit, cooldown)
+- **Momentum/Trend Following** ⭐: Multi-factor momentum scoring with trailing ATR stops, compounding, and periodic rebalancing
+- **Adaptive Strategy** ⭐: Continuous day-by-day regime detection drives seamless allocation between all strategies
+- **Combined Portfolio** ⭐: 50% momentum + 30% pairs + 20% cash reserve, run in parallel
 - **ATR-Based Dynamic Stops**: Stop-loss = entry ± 2×ATR; take-profit = entry ± 3×ATR
 - **Risk Management**: Fixed fractional sizing, stop-loss, take-profit, max drawdown circuit breaker
 - **Paper Trading**: Full Alpaca API integration with bracket and trailing stop orders
-- **Backtesting**: Event-driven engine with slippage modeling across all six strategies
-- **Strategy Comparison**: `--mode compare` runs all six approaches side-by-side
+- **Backtesting**: Event-driven engine with slippage modeling across all seven strategies
+- **Strategy Comparison**: `--mode compare` runs all seven approaches side-by-side
 - **No look-ahead bias**: All indicators computed using only past data
 
 ## Setup
@@ -82,6 +83,7 @@ Pure Mean Reversion      | X.XX%      | X.XX       | X.XX%      | XX       | XX.
 Pairs Trading            | X.XX%      | X.XX       | X.XX%      | XX       | XX.X%
 Momentum                 | X.XX%      | X.XX       | X.XX%      | XX       | XX.X%
 Adaptive (Regime Switch) | X.XX%      | X.XX       | X.XX%      | XX       | XX.X%
+Combined Portfolio       | X.XX%      | X.XX       | X.XX%      | XX       | XX.X%
 Buy & Hold SPY           | X.XX%      | —          | —          | 1        | —
 ```
 
@@ -99,6 +101,9 @@ python main.py --mode backtest --strategy momentum
 
 # Backtest adaptive (regime-switching) only
 python main.py --mode backtest --strategy adaptive
+
+# Backtest combined portfolio (50% momentum + 30% pairs + 20% cash)
+python main.py --mode backtest --strategy combined
 
 # Backtest mean reversion only (original)
 python main.py --mode backtest --strategy mean_reversion
@@ -176,15 +181,27 @@ The **trailing stop** locks in profits as the stock rises and exits automaticall
 
 Uses the **Gaussian Mixture Model regime detector** to identify the current market environment and dynamically allocates capital to the best-suited strategy.
 
-| Regime | Description | Allocation |
-|--------|-------------|------------|
-| **0** | Low volatility / mean-reverting | 70% pairs, 20% momentum, 10% cash |
-| **1** | Normal / trending | 20% pairs, 70% momentum, 10% cash |
+| Regime | Description | Active Strategy |
+|--------|-------------|-----------------|
+| **0** | Low volatility / mean-reverting | Pairs Trading |
+| **1** | Normal / trending | Momentum |
 | **2** | High volatility / crisis | 100% cash (no trading) |
 
-**Smooth transitions**: When regime changes, positions are reduced gradually over 3 days to avoid whipsaw. This is the **recommended default strategy** for live trading.
+The adaptive strategy runs as a **single continuous day-by-day loop** so strategies always have full historical context (fixing the "0 trades" bug from regime window sub-backtests). The regime detector is fit on the complete dataset; momentum signals and pairs z-scores are pre-computed once from full history. When the regime changes, all open positions from the previous strategy are closed cleanly before switching.
 
-### 5. Regime Detection (Path B)
+### 5. Combined Portfolio ⭐
+
+A **static allocation** portfolio that runs momentum and pairs trading in parallel:
+
+| Allocation | Strategy |
+|------------|----------|
+| **50%** | Momentum |
+| **30%** | Pairs Trading |
+| **20%** | Cash Reserve |
+
+Combined daily portfolio value = momentum sub-portfolio + pairs sub-portfolio + cash reserve.
+
+### 6. Regime Detection (Path B)
 
 A **Gaussian Mixture Model** classifies each day into one of 3 regimes using:
 - 20-day realized volatility (annualised)
@@ -216,8 +233,16 @@ A LightGBM classifier trained across 8 symbols on 5 years of data. Predicts whet
 | Max portfolio drawdown | 10% |
 | Pairs z-score stop | ±3.0 |
 | Pairs lookback window | 60 days |
-| Momentum trailing stop | 2×ATR |
+| Capital per pair | 10% of portfolio |
+| Max simultaneous pairs | 3 |
+| Max pair loss | 3% of capital_per_pair |
+| Pair cooldown | 5 trading days after stop |
+| Max portfolio exposure | 60% committed to pairs |
+| Momentum top-N | 4 stocks |
+| Momentum trailing stop | 2.5×ATR |
+| Momentum rebalance | Every 20 trading days |
 | Regime transition period | 3 days |
+| Combined allocation | 50% momentum / 30% pairs / 20% cash |
 
 ## Running Tests
 
