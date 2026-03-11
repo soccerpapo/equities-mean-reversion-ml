@@ -20,9 +20,9 @@ MAX_POSITION_SIZE_PCT = 0.25
 STOP_LOSS_PCT = 0.05
 TAKE_PROFIT_PCT = 0.10
 MAX_PORTFOLIO_DRAWDOWN_PCT = 0.1
-ML_CONFIDENCE_THRESHOLD = 0.60
+ML_CONFIDENCE_THRESHOLD = 0.45
 ML_LOOKBACK_YEARS = 5
-FORWARD_RETURN_PERIOD = 3
+FORWARD_RETURN_PERIOD = 5
 TRADING_INTERVAL_SECONDS = 60
 
 # Strategy mode
@@ -30,28 +30,28 @@ USE_ML_FILTER = True  # Can be toggled off for pure statistical mode
 USE_REGIME_DETECTION = True  # Enable regime-based position sizing
 
 # ATR-based stops
-ATR_STOP_MULTIPLIER = 3.0
-ATR_PROFIT_MULTIPLIER = 4.5
+ATR_STOP_MULTIPLIER = 2.0
+ATR_PROFIT_MULTIPLIER = 3.0
 
 # Volatility regime filter
 VOL_PERCENTILE_LOW = 20   # Don't trade below this volatility percentile
 VOL_PERCENTILE_HIGH = 80  # Don't trade above this volatility percentile
 
 # Trend filter
-USE_TREND_FILTER = True
+USE_TREND_FILTER = False
 TREND_SMA_PERIOD = 200
 
 # Signal strength minimum
-MIN_SIGNAL_STRENGTH = 0.6
+MIN_SIGNAL_STRENGTH = 0.35
 
 # Regime detection
 REGIME_N_COMPONENTS = 3  # Number of regimes to detect
 
 # Pairs Trading
-PAIRS_ZSCORE_ENTRY = 2.5
+PAIRS_ZSCORE_ENTRY = 2.0
 PAIRS_ZSCORE_EXIT = 0.5
-PAIRS_ZSCORE_STOP = 3.0
-PAIRS_LOOKBACK = 90  # Rolling window for spread z-score
+PAIRS_ZSCORE_STOP = 3.5
+PAIRS_LOOKBACK = 60  # Rolling window for spread z-score
 PAIRS_COINT_PVALUE = 0.05  # Max p-value for cointegration
 CAPITAL_PER_PAIR = 0.10  # 10% of portfolio per pair
 MAX_SIMULTANEOUS_PAIRS = 3  # Maximum number of open pair positions at once
@@ -64,7 +64,7 @@ MOMENTUM_SMA_FAST = 50
 MOMENTUM_SMA_SLOW = 200
 MOMENTUM_ADX_THRESHOLD = 25
 MOMENTUM_TOP_N = 4  # Number of top stocks to hold
-TRAILING_STOP_ATR_MULT = 2.5
+TRAILING_STOP_ATR_MULT = 3.0
 MOMENTUM_REBALANCE_DAYS = 20  # Rebalance portfolio every N trading days
 
 # Adaptive Strategy

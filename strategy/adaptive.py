@@ -229,17 +229,21 @@ class AdaptiveTrader:
         # When a transition is in progress, keep _current_regime unchanged
         # until the counter reaches zero; do NOT overwrite it unconditionally.
 
-        allocation = self.allocate_capital(regime, total_capital)
-        strategy = self.select_strategy(regime)
-        strategy_name = {0: "pairs", 1: "momentum", 2: "cash"}.get(regime, "cash")
+        # Use the stable _current_regime for allocation and strategy selection so
+        # that capital isn't reallocated mid-transition while positions from the
+        # old regime are still being unwound.
+        active_regime = self._current_regime if self._current_regime is not None else regime
+        allocation = self.allocate_capital(active_regime, total_capital)
+        strategy = self.select_strategy(active_regime)
+        strategy_name = {0: "pairs", 1: "momentum", 2: "cash"}.get(active_regime, "cash")
 
         signals: Dict[str, pd.DataFrame] = {}
         pairs: List = []
         orders: List[Dict] = []
 
-        if regime == 2 or strategy is None:
+        if active_regime == 2 or strategy is None:
             logger.info("Regime 2 (crisis): holding cash, no new orders.")
-        elif regime == 0 and isinstance(strategy, PairsTrader):
+        elif active_regime == 0 and isinstance(strategy, PairsTrader):
             # Pairs trading
             price_series = {sym: df["Close"] for sym, df in data_dict.items() if "Close" in df.columns}
             pairs = strategy.find_cointegrated_pairs(symbols, price_series)
@@ -264,7 +268,7 @@ class AdaptiveTrader:
                 )
                 orders.extend(pair_orders)
                 signals[f"{sym_a}/{sym_b}"] = pair_signals
-        elif regime == 1 and isinstance(strategy, MomentumTrader):
+        elif active_regime == 1 and isinstance(strategy, MomentumTrader):
             # Momentum trading
             top_symbols, _ = strategy.rank_and_select(data_dict, top_n=strategy.top_n)
             for symbol in top_symbols:
