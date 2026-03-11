@@ -420,10 +420,10 @@ class BacktestEngine:
         pair_cooldown_days = getattr(settings, "PAIR_COOLDOWN_DAYS", 5)
         max_portfolio_exposure = getattr(settings, "MAX_PORTFOLIO_EXPOSURE", 0.6)
 
-        # Portfolio-level stop: close all if portfolio drops >15% from high watermark;
+        # Portfolio-level stop: close all if portfolio drops >20% from high watermark;
         # after triggering, pause all new entries for PORTFOLIO_STOP_COOLDOWN days.
-        PORTFOLIO_STOP_PCT = 0.15
-        PORTFOLIO_STOP_COOLDOWN = 10
+        PORTFOLIO_STOP_PCT = 0.20
+        PORTFOLIO_STOP_COOLDOWN = 20
         portfolio_high_watermark = initial_capital
         portfolio_stop_cooldown_remaining = 0
 

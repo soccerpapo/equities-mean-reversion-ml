@@ -22,7 +22,7 @@ class MomentumTrader:
     """Momentum / trend-following strategy.
 
     Signals:
-      BUY  when: momentum_score > 0.3 AND price > 200 SMA AND ADX > 25
+      BUY  when: momentum_score > 0.4 AND price > 200 SMA AND ADX > 25
       SELL when: momentum_score < -0.3 OR price < 200 SMA OR trailing stop hit
     """
 
@@ -261,7 +261,7 @@ class MomentumTrader:
     def generate_signals(self, df: pd.DataFrame) -> pd.DataFrame:
         """Generate momentum trading signals for a single symbol.
 
-        BUY  when: momentum_score > 0.3 AND price > SMA_SLOW AND ADX > threshold
+        BUY  when: momentum_score > 0.4 AND price > SMA_SLOW AND ADX > threshold
         SELL when: momentum_score < -0.3 OR price < SMA_SLOW OR trailing stop hit
 
         Args:
@@ -288,6 +288,16 @@ class MomentumTrader:
         highest_since_entry = 0.0
         in_position = False
         trailing_stops = pd.Series(np.nan, index=result.index)
+        # Number of bars to sit out after each SELL to prevent whipsaw re-entry
+        POST_SELL_COOLDOWN_BARS = 5
+        cooldown_remaining = 0
+
+        # Entry threshold: require stronger momentum than the exit threshold to
+        # avoid immediately re-entering after a weak momentum-driven sell.
+        ENTRY_MOMENTUM_THRESHOLD = 0.4
+        # Signal-strength formula: map [0.4, 1.0] → [0.3, 1.0]
+        STRENGTH_RANGE = 1.0 - ENTRY_MOMENTUM_THRESHOLD  # 0.6
+        STRENGTH_OFFSET = 0.3
 
         # Initialise signal columns
         result["signal"] = 0
@@ -318,15 +328,21 @@ class MomentumTrader:
                     in_position = False
                     entry_price = 0.0
                     highest_since_entry = 0.0
+                    cooldown_remaining = POST_SELL_COOLDOWN_BARS
             else:
+                # Decrement cooldown counter; skip entry during cooldown
+                if cooldown_remaining > 0:
+                    cooldown_remaining -= 1
+                    continue
+
                 # Entry conditions
                 above_sma = (not pd.isna(sma_slow_val)) and (price > sma_slow_val)
                 strong_trend = adx_val > self.adx_threshold
-                strong_momentum = mom_score > 0.3
+                strong_momentum = mom_score > ENTRY_MOMENTUM_THRESHOLD
 
                 if strong_momentum and above_sma and strong_trend:
                     result.at[idx, "signal"] = 1
-                    strength = min(1.0, (mom_score - 0.3) / 0.7 + 0.3)
+                    strength = min(1.0, (mom_score - ENTRY_MOMENTUM_THRESHOLD) / STRENGTH_RANGE + STRENGTH_OFFSET)
                     result.at[idx, "signal_strength"] = round(strength, 4)
                     in_position = True
                     entry_price = price

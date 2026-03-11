@@ -4,7 +4,7 @@ from typing import Dict, List, Optional
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.metrics import classification_report
+from sklearn.metrics import classification_report, recall_score
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
 import lightgbm as lgb
@@ -33,6 +33,7 @@ class MLSignalFilter:
         self._model: Optional[lgb.LGBMClassifier] = None
         self._scaler = StandardScaler()
         self._feature_cols: list = []
+        self._class1_recall: float = 1.0  # default: assume model is usable
 
     def prepare_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Prepare feature matrix from indicators.
@@ -136,14 +137,20 @@ class MLSignalFilter:
             "n_estimators": [100, 200, 300],
             "max_depth": [3, 5, 7],
             "learning_rate": [0.01, 0.05, 0.1],
-            "min_child_samples": [10, 20, 50],
+            "min_child_samples": [5, 10, 20],
         }
 
         tscv = TimeSeriesSplit(n_splits=5)
         best_score = -np.inf
         best_params = {}
 
-        scale_pos_weight_value = (y_train == 0).sum() / max((y_train == 1).sum(), 1)
+        # Minimum scale_pos_weight=3.0 ensures at least 3× weight on the positive
+        # class even when the dataset is only mildly imbalanced, counteracting the
+        # tendency of tree models to default to "always-predict-0" on small datasets.
+        scale_pos_weight_value = max(
+            (y_train == 0).sum() / max((y_train == 1).sum(), 1),
+            3.0,
+        )
 
         for n_est in param_grid["n_estimators"]:
             for depth in param_grid["max_depth"]:
@@ -275,6 +282,15 @@ class MLSignalFilter:
         logger.info(f"ML model classification report:\n{report}")
         print(report)
 
+        # Compute and store class-1 recall for degenerate-model detection
+        self._class1_recall = float(recall_score(y_test, y_pred, pos_label=1, zero_division=0))
+        if self._class1_recall < 0.10:
+            logger.warning(
+                "ML model class-1 recall is %.2f (< 0.10). "
+                "Model is degenerate; filter_signals() will bypass filtering.",
+                self._class1_recall,
+            )
+
         self._log_feature_importance()
 
     def train_multi_symbol(self, symbols: List[str]) -> None:
@@ -350,6 +366,15 @@ class MLSignalFilter:
         logger.info(f"Multi-symbol ML model classification report:\n{report}")
         print(report)
 
+        # Compute and store class-1 recall for degenerate-model detection
+        self._class1_recall = float(recall_score(y_test, y_pred, pos_label=1, zero_division=0))
+        if self._class1_recall < 0.10:
+            logger.warning(
+                "ML model class-1 recall is %.2f (< 0.10). "
+                "Model is degenerate; filter_signals() will bypass filtering.",
+                self._class1_recall,
+            )
+
         self._log_feature_importance()
 
     def _log_feature_importance(self) -> None:
@@ -395,6 +420,12 @@ class MLSignalFilter:
         """
         if self._model is None:
             logger.warning("Model not trained; returning signals unfiltered")
+            return df
+        if self._class1_recall < 0.10:
+            logger.warning(
+                "Bypassing ML filter: class-1 recall=%.2f is below 0.10 (degenerate model).",
+                self._class1_recall,
+            )
             return df
         result = df.copy()
         proba = self.predict(df)
