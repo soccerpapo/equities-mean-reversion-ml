@@ -22,12 +22,49 @@ class BacktestEngine:
         self._benchmark: Optional[pd.Series] = None
         self._regimes: Optional[pd.Series] = None  # regime label per day
 
+    def _calculate_position_size(self, atr: float, price: float) -> float:
+        """Calculate position size as a fraction of cash based on ATR volatility.
+
+        Uses volatility-inverse sizing: lower volatility → larger position (up to
+        MAX_POSITION_SIZE_PCT), higher volatility → smaller position (down to 0.15).
+        ATR as a percentage of price is used as the volatility measure.
+
+        Args:
+            atr: Average True Range value for the current bar.
+            price: Current asset price.
+
+        Returns:
+            Position size as a fraction of available cash (between 0.15 and MAX_POSITION_SIZE_PCT).
+        """
+        from config import settings
+
+        max_size = getattr(settings, "MAX_POSITION_SIZE_PCT", 0.25)
+        min_size = 0.15
+
+        if atr <= 0 or price <= 0:
+            return max_size  # default to max when ATR unavailable
+
+        # Normalised volatility: ATR as percentage of price
+        atr_pct = atr / price
+
+        # Linear interpolation: low vol (≤1%) → max_size; high vol (≥3%) → min_size
+        low_vol_threshold = 0.01
+        high_vol_threshold = 0.03
+
+        if atr_pct <= low_vol_threshold:
+            return max_size
+        elif atr_pct >= high_vol_threshold:
+            return min_size
+        else:
+            t = (atr_pct - low_vol_threshold) / (high_vol_threshold - low_vol_threshold)
+            return max_size - t * (max_size - min_size)
+
     def run(
         self,
         df: pd.DataFrame,
         signals_df: pd.DataFrame,
         initial_capital: float = 100_000.0,
-        use_atr_stops: bool = False,
+        use_atr_stops: bool = True,
         atr_stop_mult: float = 2.0,
         atr_profit_mult: float = 3.0,
         regimes: Optional[pd.Series] = None,
@@ -127,7 +164,8 @@ class BacktestEngine:
 
             # Enter new position
             if signal != 0 and position == 0:
-                max_invest = cash * 0.1 * strength
+                position_size_pct = self._calculate_position_size(atr, price)
+                max_invest = cash * position_size_pct * strength
                 shares = int(max_invest / exec_price)
                 if shares > 0:
                     position = shares if signal == 1 else -shares
@@ -359,6 +397,8 @@ class BacktestEngine:
           - MAX_PAIR_LOSS_PCT: per-pair loss limit relative to capital_per_pair
           - PAIR_COOLDOWN_DAYS: trading-day cooldown after a forced exit
           - MAX_PORTFOLIO_EXPOSURE: portfolio-level exposure cap
+          - Portfolio-level stop: if portfolio drops >15% from high watermark,
+            close all pairs and pause trading for 10 days
 
         Args:
             pairs_data: List of pair dicts as described above.
@@ -379,6 +419,13 @@ class BacktestEngine:
         max_pair_loss_pct = getattr(settings, "MAX_PAIR_LOSS_PCT", 0.03)
         pair_cooldown_days = getattr(settings, "PAIR_COOLDOWN_DAYS", 5)
         max_portfolio_exposure = getattr(settings, "MAX_PORTFOLIO_EXPOSURE", 0.6)
+
+        # Portfolio-level stop: close all if portfolio drops >15% from high watermark;
+        # after triggering, pause all new entries for PORTFOLIO_STOP_COOLDOWN days.
+        PORTFOLIO_STOP_PCT = 0.15
+        PORTFOLIO_STOP_COOLDOWN = 10
+        portfolio_high_watermark = initial_capital
+        portfolio_stop_cooldown_remaining = 0
 
         all_dates = set()
         for pair in pairs_data:
@@ -478,6 +525,10 @@ class BacktestEngine:
                     if pair_key in pair_cooldown and day_idx <= pair_cooldown[pair_key] + pair_cooldown_days:
                         continue
 
+                    # Skip if portfolio-level stop cooldown is active
+                    if portfolio_stop_cooldown_remaining > 0:
+                        continue
+
                     # Skip if already at max simultaneous pairs
                     if len(pair_positions) >= max_simultaneous_pairs:
                         continue
@@ -526,7 +577,35 @@ class BacktestEngine:
                         "short_margin": short_margin,
                     }
 
-            portfolio_values.append({"date": date, "portfolio_value": cash + pair_equity, "cash": cash})
+            # Also block new entries during portfolio-level stop cooldown
+            current_portfolio_value = cash + pair_equity
+            portfolio_values.append({"date": date, "portfolio_value": current_portfolio_value, "cash": cash})
+
+            # Update high watermark and check portfolio-level stop
+            if current_portfolio_value > portfolio_high_watermark:
+                portfolio_high_watermark = current_portfolio_value
+            if portfolio_stop_cooldown_remaining > 0:
+                portfolio_stop_cooldown_remaining -= 1
+            drawdown_from_hwm = (portfolio_high_watermark - current_portfolio_value) / portfolio_high_watermark
+            if drawdown_from_hwm > PORTFOLIO_STOP_PCT and portfolio_stop_cooldown_remaining == 0:
+                # Close all open pairs immediately
+                for pk, pos in list(pair_positions.items()):
+                    self._trades.append({
+                        "entry_date": pos["entry_date"],
+                        "exit_date": date,
+                        "symbol": pk,
+                        "side": "long_spread" if pos["side"] == 1 else "short_spread",
+                        "pnl": 0.0,  # approximate: close at roughly breakeven for simplicity
+                        "exit_reason": "portfolio_stop",
+                    })
+                    cash += pos.get("long_cost", capital_per_pair / 2) + pos.get("short_margin", capital_per_pair / 2)
+                pair_positions.clear()
+                portfolio_stop_cooldown_remaining = PORTFOLIO_STOP_COOLDOWN
+                logger.info(
+                    "Portfolio-level stop triggered at %s: drawdown %.1f%% from high watermark. "
+                    "Pausing for %d days.",
+                    date, drawdown_from_hwm * 100, PORTFOLIO_STOP_COOLDOWN,
+                )
 
         if not portfolio_values:
             return pd.DataFrame()

@@ -24,6 +24,9 @@ class MLSignalFilter:
         "skewness_20", "kurtosis_20", "vol_ratio", "volume_trend",
         "dist_sma50", "dist_sma200", "autocorr_10", "intraday_range", "gap",
         "day_of_week", "month",
+        # Derived features for better signal quality
+        "zscore_rate", "rsi_zscore", "vol_regime", "mean_reversion_speed",
+        "bb_squeeze", "volume_surge",
     ]
 
     def __init__(self):
@@ -46,6 +49,42 @@ class MLSignalFilter:
         if "month" not in result.columns:
             result["month"] = result.index.month
 
+        # Derived features
+        if "zscore" in result.columns:
+            # Rate of change of z-score (is z-score accelerating toward mean?)
+            result["zscore_rate"] = result["zscore"].diff()
+
+        if "rsi" in result.columns:
+            # Z-score of RSI itself (how extreme is RSI relative to recent history?)
+            rsi_mean = result["rsi"].rolling(window=20).mean()
+            rsi_std = result["rsi"].rolling(window=20).std()
+            result["rsi_zscore"] = (result["rsi"] - rsi_mean) / rsi_std.replace(0, np.nan)
+
+        if "volatility" in result.columns:
+            # Volatility percentile (0-1 scale) over rolling 252-day window
+            result["vol_regime"] = result["volatility"].rolling(window=252, min_periods=20).rank(pct=True)
+        elif "Close" in result.columns:
+            returns = result["Close"].pct_change()
+            vol_20 = returns.rolling(window=20).std()
+            result["vol_regime"] = vol_20.rolling(window=252, min_periods=20).rank(pct=True)
+
+        if "Close" in result.columns:
+            # Autocorrelation of returns over 5 days (negative = mean-reverting)
+            returns = result["Close"].pct_change()
+            result["mean_reversion_speed"] = returns.rolling(window=5).apply(
+                lambda x: x.autocorr(lag=1) if len(x) > 1 else np.nan, raw=False
+            )
+
+        if "bb_bandwidth" in result.columns:
+            # BB squeeze: 1 when bandwidth is below its 20th percentile (compression precedes expansion)
+            bb_pctile = result["bb_bandwidth"].rolling(window=252, min_periods=20).rank(pct=True)
+            result["bb_squeeze"] = (bb_pctile < 0.2).astype(float)
+
+        if "Volume" in df.columns:
+            # Volume surge: volume / 50-day average volume
+            vol_50 = df["Volume"].rolling(window=50).mean()
+            result["volume_surge"] = df["Volume"] / vol_50.replace(0, np.nan)
+
         available = [c for c in self.FEATURE_COLS if c in result.columns]
         self._feature_cols = available
         return result[available].copy()
@@ -59,20 +98,29 @@ class MLSignalFilter:
         Rows with unknown future returns (end of series) become NaN and are dropped by
         the caller before training.
 
+        Labels use a risk-adjusted threshold: label=1 only when the forward return
+        exceeds 1.5× the recent realized volatility, so the move is significant
+        relative to normal noise (not just > transaction cost).
+
         Args:
             df: DataFrame with Close prices
             forward_returns_period: Number of days to look forward
-            signal_type: 1 for BUY signals (label=1 if forward return > transaction cost),
-                        -1 for SELL signals (label=1 if forward return is negative)
+            signal_type: 1 for BUY signals (label=1 if forward return > threshold),
+                        -1 for SELL signals (label=1 if forward return is negative
+                        and its absolute value > threshold)
 
         Returns:
             Series of binary labels aligned to each row's date
         """
-        transaction_cost = 0.0002  # 0.02%
         fwd_return = df["Close"].shift(-forward_returns_period) / df["Close"] - 1
+
+        # Recent 20-day volatility of returns as the noise threshold
+        recent_vol = df["Close"].pct_change().rolling(window=20).std().shift(1)
+        vol_threshold = (recent_vol * 1.5).fillna(0.005)  # fallback to 0.5%
+
         if signal_type == -1:
-            return (fwd_return < 0).astype(int)
-        return (fwd_return > transaction_cost).astype(int)
+            return ((-fwd_return) > vol_threshold).astype(int)
+        return (fwd_return > vol_threshold).astype(int)
 
     def _tune_and_train(self, X_train: pd.DataFrame, y_train: pd.Series) -> lgb.LGBMClassifier:
         """Find best hyperparameters using TimeSeriesSplit, then train on full training set.
@@ -145,7 +193,11 @@ class MLSignalFilter:
         return final_model
 
     def train(self, df: pd.DataFrame) -> None:
-        """Train LightGBM classifier with time-series split.
+        """Train LightGBM classifier with expanding-window walk-forward validation.
+
+        Uses purged cross-validation: a gap of `forward_returns_period` days is
+        inserted between train and validation folds to prevent label leakage.
+        The final model is trained on the full training set (first 80% of data).
 
         Args:
             df: DataFrame with indicators and Close prices
@@ -178,6 +230,43 @@ class MLSignalFilter:
             columns=self._feature_cols,
             index=X_test.index,
         )
+
+        # Expanding-window walk-forward validation with purge gap
+        n_wf_splits = 5
+        gap = forward_period  # purge gap to prevent label leakage
+        fold_size = max(20, len(X_train_scaled) // (n_wf_splits + 1))
+        wf_scores = []
+        for fold in range(n_wf_splits):
+            train_end = (fold + 1) * fold_size
+            val_start = train_end + gap
+            val_end = val_start + fold_size
+            if val_end > len(X_train_scaled):
+                break
+            X_tr = X_train_scaled.iloc[:train_end]
+            y_tr = y_train.iloc[:train_end]
+            X_val = X_train_scaled.iloc[val_start:val_end]
+            y_val = y_train.iloc[val_start:val_end]
+            if len(X_tr) < 10 or len(X_val) < 5:
+                continue
+            scale_pos_weight_fold = (y_tr == 0).sum() / max((y_tr == 1).sum(), 1)
+            fold_model = lgb.LGBMClassifier(
+                n_estimators=100,
+                max_depth=5,
+                learning_rate=0.05,
+                min_child_samples=20,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                scale_pos_weight=scale_pos_weight_fold,
+                random_state=42,
+                verbose=-1,
+            )
+            fold_model.fit(X_tr, y_tr)
+            wf_scores.append(fold_model.score(X_val, y_val))
+
+        if wf_scores:
+            avg_wf_score = float(np.mean(wf_scores))
+            logger.info(f"Walk-forward validation avg accuracy: {avg_wf_score:.4f} over {len(wf_scores)} folds")
+            print(f"Walk-forward validation accuracy: {avg_wf_score:.4f} ({len(wf_scores)} folds)")
 
         self._model = self._tune_and_train(X_train_scaled, y_train)
 

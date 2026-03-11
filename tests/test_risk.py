@@ -12,8 +12,8 @@ def risk_mgr():
 class TestPositionSizing:
     def test_basic_position_size(self, risk_mgr):
         qty = risk_mgr.calculate_position_size(100_000, 100.0, 1.0)
-        # 10% of 100k = 10k; 10k / 100 = 100 shares
-        assert qty == 100
+        # 25% of 100k = 25k; 25k / 100 = 250 shares
+        assert qty == 250
 
     def test_position_size_scales_with_strength(self, risk_mgr):
         qty_full = risk_mgr.calculate_position_size(100_000, 100.0, 1.0)
@@ -38,32 +38,34 @@ class TestPositionSizing:
 
 class TestStopLoss:
     def test_long_stop_loss_triggered(self, risk_mgr):
-        # Entry 100, stop at 2% = 98. Price 97 should trigger.
-        assert risk_mgr.check_stop_loss(100.0, 97.0, "long") is True
+        # Entry 100, stop at 5% = 95. Price 94 should trigger.
+        assert risk_mgr.check_stop_loss(100.0, 94.0, "long") is True
 
     def test_long_stop_loss_not_triggered(self, risk_mgr):
-        assert risk_mgr.check_stop_loss(100.0, 99.5, "long") is False
+        assert risk_mgr.check_stop_loss(100.0, 97.0, "long") is False
 
     def test_short_stop_loss_triggered(self, risk_mgr):
-        assert risk_mgr.check_stop_loss(100.0, 103.0, "short") is True
+        # Entry 100, stop at 5% above = 105. Price 106 should trigger.
+        assert risk_mgr.check_stop_loss(100.0, 106.0, "short") is True
 
     def test_short_stop_loss_not_triggered(self, risk_mgr):
-        assert risk_mgr.check_stop_loss(100.0, 100.5, "short") is False
+        assert risk_mgr.check_stop_loss(100.0, 103.0, "short") is False
 
 
 class TestTakeProfit:
     def test_long_take_profit_triggered(self, risk_mgr):
-        # Entry 100, take profit at 4% = 104. Price 105 should trigger.
-        assert risk_mgr.check_take_profit(100.0, 105.0, "long") is True
+        # Entry 100, take profit at 10% = 110. Price 111 should trigger.
+        assert risk_mgr.check_take_profit(100.0, 111.0, "long") is True
 
     def test_long_take_profit_not_triggered(self, risk_mgr):
-        assert risk_mgr.check_take_profit(100.0, 102.0, "long") is False
+        assert risk_mgr.check_take_profit(100.0, 107.0, "long") is False
 
     def test_short_take_profit_triggered(self, risk_mgr):
-        assert risk_mgr.check_take_profit(100.0, 95.0, "short") is True
+        # Entry 100, take profit at 10% below = 90. Price 89 should trigger.
+        assert risk_mgr.check_take_profit(100.0, 89.0, "short") is True
 
     def test_short_take_profit_not_triggered(self, risk_mgr):
-        assert risk_mgr.check_take_profit(100.0, 98.0, "short") is False
+        assert risk_mgr.check_take_profit(100.0, 95.0, "short") is False
 
 
 class TestMaxDrawdown:
