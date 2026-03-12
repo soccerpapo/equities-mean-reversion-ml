@@ -65,6 +65,7 @@ def _prepare_signals(
     sig_gen,
     use_ml: bool = True,
     use_regime: bool = False,
+    vix_data: pd.Series = None,
 ):
     """Fetch data and return (signals_df, regime_series).
 
@@ -76,6 +77,7 @@ def _prepare_signals(
         sig_gen: SignalGenerator instance
         use_ml: Whether to apply the ML signal filter
         use_regime: Whether to compute and return regime labels
+        vix_data: Optional VIX close prices for macro filtering
 
     Returns:
         Tuple (signals_df, regime_series) where regime_series may be None
@@ -89,7 +91,7 @@ def _prepare_signals(
         logger.error(f"Failed to fetch data for {symbol}")
         return None, None
 
-    df = ind_engine.compute_all(df)
+    df = ind_engine.compute_all(df, vix_data=vix_data)
     df = sig_gen.generate_mean_reversion_signals(df)
 
     if use_ml:
@@ -107,14 +109,44 @@ def _prepare_signals(
     return df, regime_series
 
 
+def _fetch_vix(fetcher, period: str) -> pd.Series:
+    """Fetch VIX data for macro filtering.
+
+    Args:
+        fetcher: DataFetcher instance
+        period: yfinance period string
+
+    Returns:
+        VIX close price Series, or None if unavailable
+    """
+    from config import settings
+    if not getattr(settings, "USE_VIX_FILTER", False):
+        return None
+    try:
+        vix_df = fetcher.fetch_historical("^VIX", period=period)
+        if not vix_df.empty:
+            logger.info(f"Fetched VIX data: {len(vix_df)} rows")
+            return vix_df["Close"]
+    except Exception as e:
+        logger.warning(f"Could not fetch VIX data: {e}")
+    return None
+
+
 def run_backtest(
     symbols: list,
     years: int = 2,
     use_ml: bool = True,
     use_regime: bool = False,
-    use_atr_stops: bool = False,
+    use_atr_stops: bool = True,
 ) -> None:
     """Fetch data, compute indicators, generate signals, ML filter, run backtest.
+
+    Now includes:
+    - Trade log export to CSV with all indicators at entry
+    - Trade overlay charts
+    - Per-trade analysis (stop/TP hit rates, indicator comparison)
+    - Always-on benchmark comparison vs buy-and-hold
+    - Automatic experiment tracking
 
     Args:
         symbols: List of ticker symbols to backtest
@@ -128,12 +160,15 @@ def run_backtest(
     from features.indicators import IndicatorEngine
     from strategy.signals import SignalGenerator
     from backtest.engine import BacktestEngine
+    from analysis.experiment_tracker import log_experiment
     from config import settings
 
     period = f"{years}y"
     fetcher = DataFetcher()
     ind_engine = IndicatorEngine()
     sig_gen = SignalGenerator()
+
+    vix_data = _fetch_vix(fetcher, period)
 
     summary_rows = []
 
@@ -142,11 +177,13 @@ def run_backtest(
         df, regime_series = _prepare_signals(
             symbol, period, fetcher, ind_engine, sig_gen,
             use_ml=use_ml, use_regime=use_regime,
+            vix_data=vix_data,
         )
         if df is None:
             continue
 
         bt = BacktestEngine()
+        bt._current_symbol = symbol
         bt.run(
             df,
             df,
@@ -156,35 +193,94 @@ def run_backtest(
         )
         report = bt.get_performance_report()
         bt.plot_results(output_dir=".", regime_series=regime_series)
+        bt.plot_trades_overlay(output_dir=".", symbol=symbol)
+
+        # Export trade log
+        trade_log_path = f"trade_log_{symbol}.csv"
+        bt.export_trade_log(trade_log_path)
+
+        # Per-trade analysis
+        trade_analysis = bt.get_trade_analysis()
+
+        # Benchmark comparison
+        benchmark = bt.get_benchmark_comparison()
+
+        # Log experiment
+        log_experiment(
+            symbols=[symbol],
+            years=years,
+            strategy="mean_reversion",
+            report=report,
+            trade_analysis=trade_analysis,
+        )
 
         report["symbol"] = symbol
         summary_rows.append(report)
 
-        print(f"\n=== Backtest Report: {symbol} ===")
+        print(f"\n{'='*60}")
+        print(f"  BACKTEST REPORT: {symbol}")
+        print(f"{'='*60}")
         for k, v in report.items():
             if k != "symbol":
                 print(f"  {k}: {v}")
 
+        # Always show benchmark comparison
+        print(f"\n  --- Benchmark Comparison (vs Buy & Hold) ---")
+        for k, v in benchmark.items():
+            label = k.replace("_", " ").title()
+            if isinstance(v, float):
+                print(f"  {label}: {v:.4f}")
+            else:
+                print(f"  {label}: {v}")
+
+        # Show trade analysis
+        if trade_analysis and "error" not in trade_analysis:
+            print(f"\n  --- Trade Analysis ---")
+            print(f"  Stop Hit Rate: {trade_analysis['stop_hit_rate']:.1%}")
+            print(f"  TP Hit Rate:   {trade_analysis['tp_hit_rate']:.1%}")
+            print(f"  Signal Exit:   {trade_analysis['signal_exit_rate']:.1%}")
+            print(f"  Expectancy:    ${trade_analysis['expectancy_per_trade']:.2f}/trade")
+            print(f"  Avg Holding:   {trade_analysis['avg_holding_days']:.1f} days")
+
+            if trade_analysis.get("pnl_by_exit_reason"):
+                print(f"\n  --- P&L by Exit Reason ---")
+                for reason, stats in trade_analysis["pnl_by_exit_reason"].items():
+                    print(f"    {reason}: {stats['count']} trades, "
+                          f"total=${stats['total_pnl']:.0f}, "
+                          f"win_rate={stats['win_rate']:.1%}")
+
+            if trade_analysis.get("indicator_analysis"):
+                print(f"\n  --- Indicator Comparison: Winners vs Losers ---")
+                for col, vals in trade_analysis["indicator_analysis"].items():
+                    name = col.replace("entry_", "")
+                    print(f"    {name}: win_avg={vals['win_avg']}, loss_avg={vals['loss_avg']}")
+
     if len(summary_rows) > 1:
-        print("\n=== Summary Table ===")
-        cols = ["symbol", "total_return", "sharpe_ratio", "num_trades", "win_rate", "max_drawdown"]
-        header = "  ".join(f"{c:>20}" for c in cols)
+        print(f"\n{'='*60}")
+        print("  SUMMARY TABLE")
+        print(f"{'='*60}")
+        cols = ["symbol", "total_return", "sharpe_ratio", "num_trades",
+                "win_rate", "max_drawdown", "benchmark_return", "alpha"]
+        header = "  ".join(f"{c:>16}" for c in cols)
         print(header)
         print("-" * len(header))
         for row in summary_rows:
-            line = "  ".join(f"{str(row.get(c, 'N/A')):>20}" for c in cols)
+            line = "  ".join(f"{str(row.get(c, 'N/A')):>16}" for c in cols)
             print(line)
 
         total_returns = [r["total_return"] for r in summary_rows if "total_return" in r]
         sharpes = [r["sharpe_ratio"] for r in summary_rows if "sharpe_ratio" in r]
         total_trades = sum(r.get("num_trades", 0) for r in summary_rows)
+        alphas = [r.get("alpha", 0) for r in summary_rows if "alpha" in r]
         if total_returns:
             avg_return = sum(total_returns) / len(total_returns)
             avg_sharpe = sum(sharpes) / len(sharpes) if sharpes else 0
-            print(f"\n=== Aggregate Portfolio Performance ===")
+            avg_alpha = sum(alphas) / len(alphas) if alphas else 0
+            print(f"\n  === Aggregate Portfolio Performance ===")
             print(f"  avg_total_return: {avg_return:.4f}")
             print(f"  avg_sharpe_ratio: {avg_sharpe:.4f}")
-            print(f"  total_trades_all_symbols: {total_trades}")
+            print(f"  avg_alpha:        {avg_alpha:.4f}")
+            print(f"  total_trades:     {total_trades}")
 
 
 def run_compare(symbols: list, years: int = 2) -> None:
@@ -624,6 +720,115 @@ def run_trade(use_ml: bool = True, use_regime: bool = False) -> None:
     logger.info("Trading loop stopped.")
 
 
+def run_analyze(symbols: list, years: int = 2) -> None:
+    """Run a focused analysis on trade quality for specified symbols.
+
+    Exports trade logs, generates overlay charts, and prints detailed
+    trade-by-trade analysis to help identify why the system is or isn't
+    generating alpha.
+
+    Args:
+        symbols: List of ticker symbols to analyze
+        years: Number of years of data
+    """
+    from data.fetcher import DataFetcher
+    from features.indicators import IndicatorEngine
+    from strategy.signals import SignalGenerator
+    from backtest.engine import BacktestEngine
+    from config import settings
+
+    period = f"{years}y"
+    fetcher = DataFetcher()
+    ind_engine = IndicatorEngine()
+    sig_gen = SignalGenerator()
+    vix_data = _fetch_vix(fetcher, period)
+
+    for symbol in symbols:
+        logger.info(f"Running detailed analysis for {symbol}...")
+        df, regime_series = _prepare_signals(
+            symbol, period, fetcher, ind_engine, sig_gen,
+            use_ml=False, use_regime=False,
+            vix_data=vix_data,
+        )
+        if df is None:
+            continue
+
+        bt = BacktestEngine()
+        bt._current_symbol = symbol
+        bt.run(
+            df, df,
+            use_atr_stops=True,
+            atr_stop_mult=getattr(settings, "ATR_STOP_MULTIPLIER", 2.0),
+            atr_profit_mult=getattr(settings, "ATR_PROFIT_MULTIPLIER", 3.0),
+        )
+
+        # Export trade log
+        trade_log_path = f"trade_log_{symbol}.csv"
+        trades_df = bt.export_trade_log(trade_log_path)
+
+        # Generate overlay chart
+        bt.plot_trades_overlay(output_dir=".", symbol=symbol)
+        bt.plot_results(output_dir=".", regime_series=regime_series)
+
+        # Detailed analysis
+        analysis = bt.get_trade_analysis()
+        benchmark = bt.get_benchmark_comparison()
+        report = bt.get_performance_report()
+
+        print(f"\n{'='*70}")
+        print(f"  DETAILED ANALYSIS: {symbol}")
+        print(f"{'='*70}")
+
+        print(f"\n  Performance: return={report.get('total_return', 0):.4f}, "
+              f"Sharpe={report.get('sharpe_ratio', 0):.4f}, "
+              f"MaxDD={report.get('max_drawdown', 0):.4f}")
+        print(f"  Benchmark:   return={benchmark.get('benchmark_return', 'N/A')}, "
+              f"alpha={benchmark.get('alpha', 'N/A')}")
+
+        if analysis and "error" not in analysis:
+            print(f"\n  Trades: {analysis['total_trades']}")
+            print(f"  Win Rate: {analysis['win_rate']:.1%}")
+            print(f"  Stop Hits: {analysis['stop_hit_rate']:.1%} | "
+                  f"TP Hits: {analysis['tp_hit_rate']:.1%} | "
+                  f"Signal Exits: {analysis['signal_exit_rate']:.1%}")
+            print(f"  Expectancy: ${analysis['expectancy_per_trade']:.2f}/trade")
+            print(f"  Holding: avg={analysis['avg_holding_days']:.1f}d, "
+                  f"median={analysis['median_holding_days']:.1f}d")
+
+            if analysis["stop_hit_rate"] > analysis["tp_hit_rate"]:
+                print(f"\n  ** WARNING: Stops hit more often than TPs. "
+                      f"Consider widening stop ({settings.ATR_STOP_MULTIPLIER}x ATR) "
+                      f"or tightening TP ({settings.ATR_PROFIT_MULTIPLIER}x ATR).")
+
+            if analysis.get("indicator_analysis"):
+                print(f"\n  --- What differentiates winners from losers? ---")
+                for col, vals in analysis["indicator_analysis"].items():
+                    name = col.replace("entry_", "")
+                    diff = vals["win_avg"] - vals["loss_avg"]
+                    direction = "higher" if diff > 0 else "lower"
+                    print(f"    {name}: winners are {direction} "
+                          f"(win={vals['win_avg']:.3f}, loss={vals['loss_avg']:.3f})")
+
+            print(f"\n  --- P&L Trajectory ---")
+            print(f"  First half P&L:  ${analysis['first_half_pnl']:.0f}")
+            print(f"  Second half P&L: ${analysis['second_half_pnl']:.0f}")
+            if analysis["first_half_pnl"] > 0 and analysis["second_half_pnl"] < 0:
+                print(f"  ** Performance deteriorated in second half — possible overfitting to early regime.")
+            elif analysis["second_half_pnl"] > analysis["first_half_pnl"]:
+                print(f"  ** Improving over time — encouraging sign.")
+
+        print(f"\n  Files generated:")
+        print(f"    Trade log: {trade_log_path}")
+        print(f"    Trade overlay: trades_overlay_{symbol}.png")
+        print(f"    Equity curve: backtest_results.png")
+
+
+def run_show_experiments() -> None:
+    """Print the experiment tracker summary."""
+    from analysis.experiment_tracker import print_experiment_summary
+    print_experiment_summary()
+
+
 def main():
     """Entry point for the trading system CLI."""
     import pandas as pd
@@ -632,7 +837,7 @@ def main():
     parser = argparse.ArgumentParser(description="Equities Mean Reversion ML Trading System")
     parser.add_argument(
         "--mode",
-        choices=["backtest", "train", "trade", "compare"],
+        choices=["backtest", "train", "trade", "compare", "analyze", "experiments"],
         default="backtest",
         help="Operation mode",
     )
@@ -690,6 +895,12 @@ def main():
         if strategy in ("combined", "all"):
             run_combined_backtest(symbols, years=years)
 
+    elif args.mode == "analyze":
+        symbols = args.symbols or ["SPY", "NVDA"]
+        years = args.years or 2
+        run_analyze(symbols, years=years)
+    elif args.mode == "experiments":
+        run_show_experiments()
     elif args.mode == "compare":
         symbols = args.symbols or settings.SYMBOLS
         years = args.years or 2

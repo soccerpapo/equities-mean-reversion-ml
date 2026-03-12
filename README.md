@@ -1,47 +1,62 @@
 # Equities Mean Reversion ML Trading System
 
-A production-ready algorithmic trading system that combines classical mean reversion strategies with machine learning enhancements and three new adaptive strategies: **Pairs Trading**, **Momentum/Trend Following**, and **Adaptive Regime Switching**.
+A production-ready algorithmic trading system that combines classical mean reversion strategies with machine learning enhancements and multiple adaptive strategies: **Pairs Trading**, **Momentum/Trend Following**, **Adaptive Regime Switching**, and a full **trade analysis and experiment tracking** pipeline for finding repeatable alpha.
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         SYSTEM ARCHITECTURE                                  │
-│                                                                               │
-│  ┌──────────┐    ┌────────────┐    ┌──────────────────────────────────────┐  │
-│  │  Data    │───▶│  Feature   │───▶│            Strategy Layer            │  │
-│  │ Fetcher  │    │  Engine    │    │                                      │  │
-│  │(yfinance)│    │(Indicators)│    │  ┌─────────────┐  ┌───────────────┐  │  │
-│  └──────────┘    └────────────┘    │  │ Mean Revert │  │ Pairs Trading │  │  │
-│                                    │  │  + ML Filter│  │(cointegration)│  │  │
-│                                    │  └─────────────┘  └───────────────┘  │  │
-│                                    │  ┌─────────────┐  ┌───────────────┐  │  │
-│                                    │  │  Momentum   │  │   Adaptive    │  │  │
-│                                    │  │ (trend/ADX) │  │(regime switch)│  │  │
-│                                    │  └─────────────┘  └───────────────┘  │  │
-│                                    └──────────────────────────────────────┘  │
-│                                                    │                          │
-│  ┌──────────────────────┐    ┌────────────┐    ┌───▼──────────────────────┐  │
-│  │  Regime Detector     │    │    Risk    │◀───│   Backtest / Execution   │  │
-│  │  (GMM, 3 regimes)    │    │  Manager   │    │   AlpacaTrader           │  │
-│  └──────────────────────┘    └────────────┘    └──────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                          SYSTEM ARCHITECTURE                                 │
+│                                                                              │
+│  ┌──────────┐    ┌────────────┐    ┌───────────────────────────────────────┐ │
+│  │  Data    │───▶│  Feature   │───▶│            Strategy Layer             │ │
+│  │ Fetcher  │    │  Engine    │    │                                       │ │
+│  │(yfinance)│    │(Indicators)│    │  ┌─────────────┐  ┌───────────────┐   │ │
+│  └──────────┘    └────────────┘    │  │ Mean Revert │  │ Pairs Trading │   │ │
+│                                    │  │ + ML Filter │  │(cointegration)│   │ │
+│  ┌──────────┐    ┌────────────┐    │  └─────────────┘  └───────────────┘   │ │
+│  │  VIX /   │───▶│  4-Layer   │    │  ┌─────────────┐  ┌───────────────┐   │ │
+│  │  Macro   │    │  Filter    │    │  │  Momentum   │  │   Adaptive    │   │ │
+│  └──────────┘    │  Chain     │    │  │ (trend/ADX) │  │(regime switch)│   │ │
+│                  └────────────┘    │  └─────────────┘  └───────────────┘   │ │
+│                                    └───────────────────────────────────────┘ │
+│                                                    │                         │
+│  ┌──────────────────────┐    ┌────────────┐    ┌───▼───────────────────────┐ │
+│  │  Regime Detector     │    │    Risk    │◀───│  Backtest / Execution     │ │
+│  │  (GMM, 3 regimes)    │    │  Manager   │    │  + Trade Analysis         │ │
+│  └──────────────────────┘    └────────────┘    │  + Experiment Tracker     │ │
+│                                                └───────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Features
 
-- **Mean Reversion Signals**: Z-score, RSI, Bollinger Bands, and volume confirmation
-- **Trend Filter**: 200-day SMA filter — only buy dips in uptrends, sell rips in downtrends
-- **Volatility Regime Filter**: Trade only when volatility is between 20th–80th percentile
-- **ML Signal Filter**: LightGBM classifier trained on multiple symbols (togglable with `--no-ml`)
-- **Pairs Trading** ⭐: Market-neutral cointegration-based mean reversion with risk controls (max simultaneous pairs, per-pair loss limit, cooldown)
-- **Momentum/Trend Following** ⭐: Multi-factor momentum scoring with trailing ATR stops, compounding, and periodic rebalancing
-- **Adaptive Strategy** ⭐: Continuous day-by-day regime detection drives seamless allocation between all strategies
-- **Combined Portfolio** ⭐: 50% momentum + 30% pairs + 20% cash reserve, run in parallel
-- **ATR-Based Dynamic Stops**: Stop-loss = entry ± 2×ATR; take-profit = entry ± 3×ATR
-- **Risk Management**: Fixed fractional sizing, stop-loss, take-profit, max drawdown circuit breaker
-- **Paper Trading**: Full Alpaca API integration with bracket and trailing stop orders
-- **Backtesting**: Event-driven engine with slippage modeling across all seven strategies
-- **Strategy Comparison**: `--mode compare` runs all seven approaches side-by-side
-- **No look-ahead bias**: All indicators computed using only past data
+### Signal Generation & Filtering
+- **Mean Reversion Signals**: Z-score, RSI, Bollinger Bands, and volume confirmation with weighted scoring
+- **4-Layer Filter Chain**: Each filter logs how many signals it suppressed
+  1. **Trend Filter** (200-day SMA) — buy dips only in uptrends, sell rips only in downtrends
+  2. **Volatility Regime Filter** — trade only when 20-day vol is between 20th-80th percentile
+  3. **Distance-from-Fair-Value Filter** — block entries when price is >8% from 200-SMA
+  4. **Minimum Signal Strength** — require weighted confirmation score >= 0.28
+- **VIX Macro Filter** (opt-in) — block all entries when VIX > 30
+
+### Strategies
+- **Mean Reversion** with multi-indicator confirmation and configurable looseness
+- **Pairs Trading**: Market-neutral cointegration-based spread trading with risk controls
+- **Momentum/Trend Following**: Multi-factor scoring with trailing ATR stops and rebalancing
+- **Adaptive Regime Switching**: GMM-driven allocation between strategies
+- **Combined Portfolio**: 50% momentum + 30% pairs + 20% cash reserve
+
+### Trade Analysis & Alpha Discovery
+- **Trade Log Export**: CSV with all indicators at entry (z-score, RSI, BB %B, volume, ATR, volatility, distance from SMA, MACD histogram, signal strength)
+- **Trade Overlay Charts**: 4-panel visualization — price with buy/sell markers + Bollinger Bands + 200-SMA, z-score, RSI, cumulative P&L
+- **Per-Trade Analysis**: Stop vs take-profit hit rates, expectancy per trade, P&L by exit reason, winner vs loser indicator comparison
+- **Always-On Benchmark**: Every run compares return, Sharpe, and max drawdown against SPY buy-and-hold
+- **Experiment Tracker**: CSV-based log of every parameter combination tested, sortable by Sharpe
+
+### ML & Risk
+- **ML Signal Filter**: LightGBM classifier with walk-forward validation (togglable with `--no-ml`)
+- **ATR-Based Dynamic Stops**: Stop-loss = entry +/- 1.5x ATR; take-profit = entry +/- 2.5x ATR
+- **Risk Management**: Fixed fractional sizing, max drawdown circuit breaker, regime-based position scaling
+- **Paper Trading**: Full Alpaca API integration with bracket orders
 
 ## Setup
 
@@ -50,6 +65,9 @@ A production-ready algorithmic trading system that combines classical mean rever
 ```bash
 git clone <repo-url>
 cd equities-mean-reversion-ml
+python -m venv .venv
+source .venv/bin/activate  # Linux/Mac
+# .venv\Scripts\activate   # Windows
 pip install -r requirements.txt
 ```
 
@@ -57,192 +75,189 @@ pip install -r requirements.txt
 
 ```bash
 cp .env.example .env
-# Edit .env with your Alpaca paper trading API keys
+# Edit .env with your Alpaca paper trading API keys (optional — backtesting works without them)
 ```
-
-### 3. Get Alpaca API Keys
-
-Sign up at [https://alpaca.markets](https://alpaca.markets) and create paper trading API keys.
 
 ## Usage
 
-### Compare all strategies head-to-head
+### Analyze trade quality (start here)
+
+The `analyze` mode is the best way to understand *why* your system is or isn't generating alpha. It exports trade logs, generates overlay charts, and prints detailed winner-vs-loser indicator comparisons.
 
 ```bash
-python main.py --mode compare
+python main.py --mode analyze --symbols SPY NVDA
+```
+
+Output includes:
+- `trade_log_SPY.csv` / `trade_log_NVDA.csv` — every trade with all indicators at entry
+- `trades_overlay_SPY.png` — price chart with buy/sell markers, z-score, RSI, cumulative P&L
+- Per-trade analysis: stop/TP hit rates, expectancy, indicator differences between winners and losers
+- Actionable warnings (e.g., "stops hit more often than TPs — consider widening stop")
+
+### Backtest with full reporting
+
+```bash
+# Mean reversion with all filters active (default)
+python main.py --mode backtest --symbols SPY NVDA --years 2
+
+# Pure statistical (no ML)
+python main.py --mode backtest --no-ml --strategy mean_reversion
+
+# Specific strategies
+python main.py --mode backtest --strategy pairs
+python main.py --mode backtest --strategy momentum
+python main.py --mode backtest --strategy adaptive
+python main.py --mode backtest --strategy combined
+```
+
+Every backtest now prints:
+- Performance report with benchmark comparison
+- Trade analysis (stop/TP rates, expectancy, holding periods)
+- P&L breakdown by exit reason
+- Winner vs loser indicator comparison
+- Results are automatically logged to the experiment tracker
+
+### Compare all strategies
+
+```bash
+python main.py --mode compare --symbols SPY AAPL MSFT GOOGL NVDA
+```
+
+### View experiment history
+
+```bash
+python main.py --mode experiments
 ```
 
 Output:
 ```
-=== Strategy Comparison ===
-Approach                 | Return     | Sharpe     | MaxDD      | Trades   | WinRate
--------------------------+------------+------------+------------+----------+-----------
-Pure Mean Reversion      | X.XX%      | X.XX       | X.XX%      | XX       | XX.X%
-+ Regime Detection       | X.XX%      | X.XX       | X.XX%      | XX       | XX.X%
-+ ML Filter              | X.XX%      | X.XX       | X.XX%      | XX       | XX.X%
-Pairs Trading            | X.XX%      | X.XX       | X.XX%      | XX       | XX.X%
-Momentum                 | X.XX%      | X.XX       | X.XX%      | XX       | XX.X%
-Adaptive (Regime Switch) | X.XX%      | X.XX       | X.XX%      | XX       | XX.X%
-Combined Portfolio       | X.XX%      | X.XX       | X.XX%      | XX       | XX.X%
-Buy & Hold SPY           | X.XX%      | —          | —          | 1        | —
-```
-
-### Backtest specific strategy
-
-```bash
-# Backtest all strategies (default)
-python main.py --mode backtest --strategy all
-
-# Backtest pairs trading only
-python main.py --mode backtest --strategy pairs
-
-# Backtest momentum only
-python main.py --mode backtest --strategy momentum
-
-# Backtest adaptive (regime-switching) only
-python main.py --mode backtest --strategy adaptive
-
-# Backtest combined portfolio (50% momentum + 30% pairs + 20% cash)
-python main.py --mode backtest --strategy combined
-
-# Backtest mean reversion only (original)
-python main.py --mode backtest --strategy mean_reversion
-```
-
-### Paper trade with adaptive strategy (recommended)
-
-```bash
-python main.py --mode trade --strategy adaptive
+=== Experiment Tracker Summary ===
+  experiment_id       strategy symbols  total_return  sharpe_ratio  max_drawdown  num_trades  win_rate   alpha  z_score_entry  min_signal_strength
+20260312_010457 mean_reversion    NVDA        0.0882        0.3020       -0.3026           8     0.375 -0.9369            1.7                 0.28
+20260312_010456 mean_reversion     SPY        0.0021        0.0605       -0.0678          12     0.500 -0.3390            1.7                 0.28
 ```
 
 ### Train ML model
 
 ```bash
 python main.py --mode train
+python main.py --mode train --symbols SPY AAPL MSFT GOOGL AMZN META NVDA TSLA
 ```
 
-### Other useful commands
+### Paper trade
 
 ```bash
-# Pure statistical mean reversion (no ML)
-python main.py --mode backtest --no-ml --strategy mean_reversion
-
-# With regime detection
-python main.py --mode backtest --regime --strategy mean_reversion
-
-# Multi-symbol backtest
-python main.py --mode backtest --symbols SPY AAPL MSFT GOOGL
+python main.py --mode trade --strategy adaptive
 ```
 
 ## Strategies
 
-### 1. Mean Reversion (Original)
+### 1. Mean Reversion
 
-**Signal Generation**: Buy when z-score < -1.5 and at least one of: RSI < 30, price near lower Bollinger Band, volume spike. Signal strength is a weighted combination of all confirmations.
+Buy when z-score < -1.7 and at least 1 of: RSI < 30, price near lower Bollinger Band, volume spike. Signal strength is a weighted combination of all confirmations.
 
 | Filter | Logic |
 |--------|-------|
-| **Trend filter** | BUY only above 200-day SMA; SELL only below 200-day SMA |
-| **Volatility filter** | Only trade when 20-day vol is between 20th–80th percentile |
-| **ATR stops** | Stop-loss = entry ± 2×ATR; take-profit = entry ± 3×ATR |
+| **Trend filter** | BUY only above 200-day SMA; SELL only below |
+| **Volatility filter** | Only trade when 20-day vol is in 20th-80th percentile |
+| **Distance filter** | Only enter when price is within 8% of 200-day SMA |
+| **ATR stops** | Stop = entry +/- 1.5x ATR; TP = entry +/- 2.5x ATR |
 
-### 2. Pairs Trading (Market-Neutral) ⭐
+### 2. Pairs Trading (Market-Neutral)
 
-Identifies **cointegrated** pairs of stocks using the Engle-Granger test and trades the spread between them. Because both legs offset each other, this strategy is **market-neutral** — profits come from mean reversion of the spread regardless of overall market direction.
+Identifies cointegrated pairs using the Engle-Granger test and trades spread mean reversion.
 
 | Condition | Action |
 |-----------|--------|
-| Spread z-score < -2.0 | BUY spread (buy stock A, sell stock B) |
-| Spread z-score > +2.0 | SELL spread (sell stock A, buy stock B) |
-| \|Z-score\| < 0.5 | CLOSE position (spread reverted) |
+| Spread z-score < -2.0 | BUY spread (buy A, sell B) |
+| Spread z-score > +2.0 | SELL spread (sell A, buy B) |
+| \|Z-score\| < 0.5 | CLOSE (spread reverted) |
 | \|Z-score\| > 3.0 | STOP LOSS (spread diverging) |
 
-- **Hedge ratio**: Determined by OLS regression to ensure dollar-neutral positions
-- **Rolling hedge**: Recalculated on a 60-day window to adapt to changing relationships
-- **Cointegration tested on expanding window**: Pairs are re-evaluated to detect breakdown
+### 3. Momentum / Trend Following
 
-### 3. Momentum / Trend Following ⭐
+Ranks stocks by composite momentum score (1M, 3M, 6M, 12M returns) and enters long positions in top-N stocks when ADX > 25 and price > 200-SMA. Trailing ATR stops lock in profits.
 
-Ranks stocks by **composite momentum score** (weighted blend of 1M, 3M, 6M, and 12M returns) and enters long positions in the top-N stocks when trend indicators confirm.
+### 4. Adaptive Strategy (Regime Switching)
 
-**Entry conditions** (all must be true):
-- Momentum score > 0.3
-- Price > 200-day SMA
-- ADX > 25 (strong trend)
-
-**Exit conditions** (any triggers exit):
-- Momentum score < -0.3
-- Price < 200-day SMA
-- Trailing stop hit (2×ATR trailing stop)
-
-The **trailing stop** locks in profits as the stock rises and exits automatically when momentum fades.
-
-### 4. Adaptive Strategy (Regime-Based Switching) ⭐
-
-Uses the **Gaussian Mixture Model regime detector** to identify the current market environment and dynamically allocates capital to the best-suited strategy.
+GMM regime detector drives allocation:
 
 | Regime | Description | Active Strategy |
 |--------|-------------|-----------------|
 | **0** | Low volatility / mean-reverting | Pairs Trading |
 | **1** | Normal / trending | Momentum |
-| **2** | High volatility / crisis | 100% cash (no trading) |
+| **2** | High volatility / crisis | 100% cash |
 
-The adaptive strategy runs as a **single continuous day-by-day loop** so strategies always have full historical context (fixing the "0 trades" bug from regime window sub-backtests). The regime detector is fit on the complete dataset; momentum signals and pairs z-scores are pre-computed once from full history. When the regime changes, all open positions from the previous strategy are closed cleanly before switching.
+### 5. Combined Portfolio
 
-### 5. Combined Portfolio ⭐
+Static allocation: 50% Momentum + 30% Pairs + 20% Cash Reserve.
 
-A **static allocation** portfolio that runs momentum and pairs trading in parallel:
+## Key Parameters
 
-| Allocation | Strategy |
-|------------|----------|
-| **50%** | Momentum |
-| **30%** | Pairs Trading |
-| **20%** | Cash Reserve |
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| Z-score entry threshold | 1.7 | Lower = more trades, higher = fewer/stronger |
+| Min signal strength | 0.28 | Weighted confirmation score minimum |
+| Min optional confirmations | 1 | Beyond z-score (1=looser, 2=tighter) |
+| RSI oversold / overbought | 30 / 70 | |
+| Stop loss (ATR) | 1.5x ATR | |
+| Take profit (ATR) | 2.5x ATR | |
+| Stop loss (fixed) | 1.5% | Fallback when ATR unavailable |
+| Take profit (fixed) | 5.0% | |
+| Max position size | 3% of portfolio | |
+| Max portfolio drawdown | 10% | Circuit breaker |
+| Trend SMA period | 200 days | |
+| Max distance from 200-SMA | 8% | |
+| Volatility percentile range | 20th-80th | |
+| VIX threshold | 30 | Opt-in macro filter |
 
-Combined daily portfolio value = momentum sub-portfolio + pairs sub-portfolio + cash reserve.
+All parameters are in `config/settings.py` and are logged to the experiment tracker on each run.
 
-### 6. Regime Detection (Path B)
+## Trade Analysis Workflow
 
-A **Gaussian Mixture Model** classifies each day into one of 3 regimes using:
-- 20-day realized volatility (annualised)
-- Volatility of volatility
-- Average absolute daily return
-- Volume ratio (5-day vs 20-day)
-- Return autocorrelation (negative = mean-reverting)
-- 20-day kurtosis
+The recommended workflow for finding repeatable alpha:
 
-| Regime | Description | Position Multiplier |
-|--------|-------------|---------------------|
-| **0** | Low volatility / mean-reverting | **1.0** (full size) |
-| **1** | Normal / trending | **0.5** (half size) |
-| **2** | High volatility / crisis | **0.0** (no trading) |
+1. **Run `--mode analyze`** on your target symbols to get trade logs and overlay charts
+2. **Inspect the trade log CSV** — look at indicators at entry for winning vs losing trades
+3. **Check the overlay chart** — are you buying real dips or fighting the trend?
+4. **Read the trade analysis** — if stops > TPs, your stop is too tight or entries are bad
+5. **Tweak parameters** in `config/settings.py` (e.g., loosen z-score, widen stops)
+6. **Re-run backtest** — results auto-log to the experiment tracker
+7. **Run `--mode experiments`** to compare all parameter combinations by Sharpe ratio
+8. **Repeat** until Sharpe > 0.5 and profit factor > 1.3 while keeping drawdown < 10%
 
-### 6. ML Filter (Path C)
+## Project Structure
 
-A LightGBM classifier trained across 8 symbols on 5 years of data. Predicts whether the next 3-day forward return is positive. Only signals with confidence ≥ **0.55** pass through to execution.
-
-## Risk Controls
-
-| Parameter | Default |
-|-----------|---------|
-| Max position size | 10% of portfolio |
-| Stop loss (fixed) | 2% per trade |
-| Take profit (fixed) | 4% per trade |
-| Stop loss (ATR) | entry ± 2×ATR |
-| Take profit (ATR) | entry ± 3×ATR |
-| Max portfolio drawdown | 10% |
-| Pairs z-score stop | ±3.0 |
-| Pairs lookback window | 60 days |
-| Capital per pair | 10% of portfolio |
-| Max simultaneous pairs | 3 |
-| Max pair loss | 3% of capital_per_pair |
-| Pair cooldown | 5 trading days after stop |
-| Max portfolio exposure | 60% committed to pairs |
-| Momentum top-N | 4 stocks |
-| Momentum trailing stop | 2.5×ATR |
-| Momentum rebalance | Every 20 trading days |
-| Regime transition period | 3 days |
-| Combined allocation | 50% momentum / 30% pairs / 20% cash |
+```
+equities-mean-reversion-ml/
+├── main.py                  # CLI orchestrator (backtest, analyze, compare, train, trade, experiments)
+├── config/
+│   └── settings.py          # All tunable parameters
+├── data/
+│   └── fetcher.py           # yfinance + Alpaca data fetching
+├── features/
+│   └── indicators.py        # Technical indicators (z-score, RSI, BB, MACD, ATR, VIX, etc.)
+├── strategy/
+│   ├── signals.py           # Mean reversion signal generator with 4-layer filter chain
+│   ├── ml_filter.py         # LightGBM signal filter
+│   ├── regime_detector.py   # Gaussian Mixture Model regime detection
+│   ├── pairs_trading.py     # Cointegration-based pairs trading
+│   ├── momentum.py          # Trend following with momentum scoring
+│   └── adaptive.py          # Regime-switching strategy orchestrator
+├── backtest/
+│   └── engine.py            # Event-driven backtester with trade logging and analysis
+├── analysis/
+│   ├── __init__.py
+│   └── experiment_tracker.py # CSV-based parameter experiment logging
+├── risk/
+│   └── manager.py           # Position sizing, stops, drawdown controls
+├── execution/
+│   └── trader.py            # Alpaca paper trading integration
+├── tests/                   # 145 tests on synthetic data (no API keys needed)
+├── experiments/              # Auto-generated experiment logs (gitignored)
+├── requirements.txt
+└── README.md
+```
 
 ## Running Tests
 
@@ -250,10 +265,7 @@ A LightGBM classifier trained across 8 symbols on 5 years of data. Predicts whet
 python -m pytest tests/ -v
 ```
 
-Tests run entirely on synthetic data — no API keys or network access required. New tests cover:
-- `tests/test_pairs.py` — cointegration detection, spread z-score, signal generation, hedge ratio
-- `tests/test_momentum.py` — momentum scoring, trend detection, ranking, trailing stops
-- `tests/test_adaptive.py` — regime-to-strategy mapping, capital allocation, transition logic
+145 tests run entirely on synthetic data — no API keys or network access required.
 
 ## Disclaimer
 

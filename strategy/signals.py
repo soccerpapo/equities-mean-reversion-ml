@@ -152,8 +152,7 @@ class SignalGenerator:
             sell_conditions[k].astype(float) * w for k, w in available_weights.items()
         ) / total_weight
 
-        # Require z-score (mandatory) + at least 2 of the optional confirmations
-        min_optional = 2
+        min_optional = getattr(settings, "MIN_OPTIONAL_CONFIRMATIONS", 1)
         optional_cols = [c for c in buy_conditions.columns if c != "zscore"]
         has_optional = len(optional_cols) > 0
         if has_optional:
@@ -182,19 +181,49 @@ class SignalGenerator:
             signals[divergence_buy] = 1
             signal_strength[divergence_buy] = 0.4
 
-        # Apply trend filter (row-wise) — suppress signals that fight the 200-day SMA
+        # --- FILTER LAYER 1: Trend filter (200-day SMA) ---
         use_trend = getattr(settings, "USE_TREND_FILTER", False)
         if use_trend and "Close" in result.columns:
             period = getattr(settings, "TREND_SMA_PERIOD", 200)
             sma = result["Close"].rolling(window=period).mean()
-            # BUY only when price is above the SMA; SELL only when below
             long_against_trend = (signals == 1) & (result["Close"] < sma)
             short_against_trend = (signals == -1) & (result["Close"] > sma)
             against_trend = long_against_trend | short_against_trend
             signals[against_trend] = 0
             signal_strength[against_trend] = 0.0
+            filtered_trend = against_trend.sum()
+            if filtered_trend > 0:
+                logger.info(f"Trend filter suppressed {filtered_trend} signals")
 
-        # Apply minimum signal strength filter
+        # --- FILTER LAYER 2: Volatility regime filter ---
+        use_vol_filter = getattr(settings, "USE_VOLATILITY_FILTER", False)
+        if use_vol_filter and "Close" in result.columns:
+            returns_vol = result["Close"].pct_change()
+            vol_20 = returns_vol.rolling(window=20).std()
+            vol_percentile = vol_20.rolling(window=252, min_periods=20).rank(pct=True) * 100
+            low_pct = getattr(settings, "VOL_PERCENTILE_LOW", 20)
+            high_pct = getattr(settings, "VOL_PERCENTILE_HIGH", 80)
+            vol_ok = (vol_percentile >= low_pct) & (vol_percentile <= high_pct)
+            vol_blocked = (signals != 0) & ~vol_ok
+            signals[vol_blocked] = 0
+            signal_strength[vol_blocked] = 0.0
+            filtered_vol = vol_blocked.sum()
+            if filtered_vol > 0:
+                logger.info(f"Volatility filter suppressed {filtered_vol} signals")
+
+        # --- FILTER LAYER 3: Distance from 200-SMA (fair value) ---
+        use_dist_filter = getattr(settings, "USE_DIST_SMA200_FILTER", False)
+        if use_dist_filter and "dist_sma200" in result.columns:
+            max_dist = getattr(settings, "MAX_DIST_SMA200", 0.08)
+            too_far = result["dist_sma200"].abs() > max_dist
+            dist_blocked = (signals != 0) & too_far
+            signals[dist_blocked] = 0
+            signal_strength[dist_blocked] = 0.0
+            filtered_dist = dist_blocked.sum()
+            if filtered_dist > 0:
+                logger.info(f"Distance-from-SMA filter suppressed {filtered_dist} signals")
+
+        # --- FILTER LAYER 4: Minimum signal strength ---
         min_strength = getattr(settings, "MIN_SIGNAL_STRENGTH", 0.0)
         if min_strength > 0:
             weak = (signals != 0) & (signal_strength < min_strength)
@@ -206,5 +235,5 @@ class SignalGenerator:
 
         buys = (signals == 1).sum()
         sells = (signals == -1).sum()
-        logger.info(f"Generated {buys} BUY and {sells} SELL signals")
+        logger.info(f"Generated {buys} BUY and {sells} SELL signals (after all filters)")
         return result

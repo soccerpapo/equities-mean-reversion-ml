@@ -15,3 +15,5 @@ build/
 logs/
 *.log
 .DS_Store
+trade_log_*.csv
+experiments/

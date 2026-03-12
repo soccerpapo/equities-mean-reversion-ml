@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from risk.manager import RiskManager
+from config import settings
 
 
 @pytest.fixture
@@ -12,8 +13,8 @@ def risk_mgr():
 class TestPositionSizing:
     def test_basic_position_size(self, risk_mgr):
         qty = risk_mgr.calculate_position_size(100_000, 100.0, 1.0)
-        # 25% of 100k = 25k; 25k / 100 = 250 shares
-        assert qty == 250
+        expected = int(100_000 * settings.MAX_POSITION_SIZE_PCT / 100.0)
+        assert qty == expected
 
     def test_position_size_scales_with_strength(self, risk_mgr):
         qty_full = risk_mgr.calculate_position_size(100_000, 100.0, 1.0)
@@ -38,34 +39,39 @@ class TestPositionSizing:
 
 class TestStopLoss:
     def test_long_stop_loss_triggered(self, risk_mgr):
-        # Entry 100, stop at 5% = 95. Price 94 should trigger.
-        assert risk_mgr.check_stop_loss(100.0, 94.0, "long") is True
+        stop_pct = settings.STOP_LOSS_PCT
+        trigger_price = 100.0 * (1 - stop_pct) - 1.0
+        assert risk_mgr.check_stop_loss(100.0, trigger_price, "long") is True
 
     def test_long_stop_loss_not_triggered(self, risk_mgr):
-        assert risk_mgr.check_stop_loss(100.0, 97.0, "long") is False
+        safe_price = 100.0 * (1 - settings.STOP_LOSS_PCT) + 1.0
+        assert risk_mgr.check_stop_loss(100.0, safe_price, "long") is False
 
     def test_short_stop_loss_triggered(self, risk_mgr):
-        # Entry 100, stop at 5% above = 105. Price 106 should trigger.
-        assert risk_mgr.check_stop_loss(100.0, 106.0, "short") is True
+        trigger_price = 100.0 * (1 + settings.STOP_LOSS_PCT) + 1.0
+        assert risk_mgr.check_stop_loss(100.0, trigger_price, "short") is True
 
     def test_short_stop_loss_not_triggered(self, risk_mgr):
-        assert risk_mgr.check_stop_loss(100.0, 103.0, "short") is False
+        safe_price = 100.0 * (1 + settings.STOP_LOSS_PCT) - 1.0
+        assert risk_mgr.check_stop_loss(100.0, safe_price, "short") is False
 
 
 class TestTakeProfit:
     def test_long_take_profit_triggered(self, risk_mgr):
-        # Entry 100, take profit at 10% = 110. Price 111 should trigger.
-        assert risk_mgr.check_take_profit(100.0, 111.0, "long") is True
+        trigger_price = 100.0 * (1 + settings.TAKE_PROFIT_PCT) + 1.0
+        assert risk_mgr.check_take_profit(100.0, trigger_price, "long") is True
 
     def test_long_take_profit_not_triggered(self, risk_mgr):
-        assert risk_mgr.check_take_profit(100.0, 107.0, "long") is False
+        safe_price = 100.0 * (1 + settings.TAKE_PROFIT_PCT) - 1.0
+        assert risk_mgr.check_take_profit(100.0, safe_price, "long") is False
 
     def test_short_take_profit_triggered(self, risk_mgr):
-        # Entry 100, take profit at 10% below = 90. Price 89 should trigger.
-        assert risk_mgr.check_take_profit(100.0, 89.0, "short") is True
+        trigger_price = 100.0 * (1 - settings.TAKE_PROFIT_PCT) - 1.0
+        assert risk_mgr.check_take_profit(100.0, trigger_price, "short") is True
 
     def test_short_take_profit_not_triggered(self, risk_mgr):
-        assert risk_mgr.check_take_profit(100.0, 95.0, "short") is False
+        safe_price = 100.0 * (1 - settings.TAKE_PROFIT_PCT) + 1.0
+        assert risk_mgr.check_take_profit(100.0, safe_price, "short") is False
 
 
 class TestMaxDrawdown:

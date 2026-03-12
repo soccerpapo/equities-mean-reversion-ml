@@ -10,15 +10,15 @@ ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets
 SYMBOLS = ["SPY", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA"]
 TRAINING_SYMBOLS = ["SPY", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA"]
 LOOKBACK_PERIOD = 252
-Z_SCORE_ENTRY_THRESHOLD = 2.0
+Z_SCORE_ENTRY_THRESHOLD = 1.7
 Z_SCORE_EXIT_THRESHOLD = 0.3
-RSI_OVERSOLD = 25
+RSI_OVERSOLD = 30
 RSI_OVERBOUGHT = 70
 BOLLINGER_WINDOW = 20
 BOLLINGER_STD = 2.0
 MAX_POSITION_SIZE_PCT = 0.03
-STOP_LOSS_PCT = 0.012
-TAKE_PROFIT_PCT = 0.06
+STOP_LOSS_PCT = 0.015
+TAKE_PROFIT_PCT = 0.05
 MAX_PORTFOLIO_DRAWDOWN_PCT = 0.1
 ML_CONFIDENCE_THRESHOLD = 0.45
 ML_LOOKBACK_YEARS = 5
@@ -26,23 +26,35 @@ FORWARD_RETURN_PERIOD = 5
 TRADING_INTERVAL_SECONDS = 60
 
 # Strategy mode
-USE_ML_FILTER = False  # Can be toggled off for pure statistical mode
-USE_REGIME_DETECTION = False  # Enable regime-based position sizing
+USE_ML_FILTER = False
+USE_REGIME_DETECTION = False
 
 # ATR-based stops
-ATR_STOP_MULTIPLIER = 1.25
-ATR_PROFIT_MULTIPLIER = 2.0
+ATR_STOP_MULTIPLIER = 1.5
+ATR_PROFIT_MULTIPLIER = 2.5
 
 # Volatility regime filter
-VOL_PERCENTILE_LOW = 20   # Don't trade below this volatility percentile
-VOL_PERCENTILE_HIGH = 80  # Don't trade above this volatility percentile
+USE_VOLATILITY_FILTER = True
+VOL_PERCENTILE_LOW = 20
+VOL_PERCENTILE_HIGH = 80
 
 # Trend filter
 USE_TREND_FILTER = True
 TREND_SMA_PERIOD = 200
 
 # Signal strength minimum
-MIN_SIGNAL_STRENGTH = 0.35
+MIN_SIGNAL_STRENGTH = 0.28
+
+# Distance from fair value filter (max % distance from 200-SMA to allow entry)
+USE_DIST_SMA200_FILTER = True
+MAX_DIST_SMA200 = 0.08
+
+# VIX macro filter
+USE_VIX_FILTER = False
+VIX_THRESHOLD_HIGH = 30
+
+# Min confirmations required beyond z-score (1 = looser, 2 = tighter)
+MIN_OPTIONAL_CONFIRMATIONS = 1
 
 # Regime detection
 REGIME_N_COMPONENTS = 3  # Number of regimes to detect

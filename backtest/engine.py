@@ -20,7 +20,10 @@ class BacktestEngine:
         self._trades: list = []
         self._initial_capital: float = 100_000.0
         self._benchmark: Optional[pd.Series] = None
-        self._regimes: Optional[pd.Series] = None  # regime label per day
+        self._regimes: Optional[pd.Series] = None
+        self._current_symbol: Optional[str] = None
+        self._pending_entry_indicators: dict = {}
+        self._signals_df: Optional[pd.DataFrame] = None
 
     def _calculate_position_size(self, atr: float, price: float) -> float:
         """Calculate position size as a fraction of cash based on ATR volatility.
@@ -89,6 +92,8 @@ class BacktestEngine:
         self._initial_capital = initial_capital
         self._trades = []
         self._regimes = regimes
+        self._signals_df = signals_df
+        self._pending_entry_indicators = {}
 
         cash = initial_capital
         position = 0
@@ -147,17 +152,23 @@ class BacktestEngine:
                     exit_exec = price * (1 - self.SLIPPAGE) if position > 0 else price * (1 + self.SLIPPAGE)
                     pnl = (exit_exec - entry_price) * position
                     cash += exit_exec * abs(position)
-                    self._trades.append({
+                    trade_record = {
                         "entry_date": entry_date,
                         "exit_date": idx,
-                        "symbol": "ASSET",
+                        "symbol": self._current_symbol or "ASSET",
                         "side": "long" if position > 0 else "short",
                         "entry_price": entry_price,
                         "exit_price": exit_exec,
                         "qty": abs(position),
                         "pnl": pnl,
+                        "return_pct": (exit_exec / entry_price - 1) * (1 if position > 0 else -1),
+                        "holding_days": (idx - entry_date).days if hasattr(idx - entry_date, "days") else 0,
                         "exit_reason": "stop" if exit_by_stop else ("tp" if exit_by_tp else "signal"),
-                    })
+                    }
+                    if hasattr(self, "_pending_entry_indicators") and self._pending_entry_indicators:
+                        trade_record.update(self._pending_entry_indicators)
+                        self._pending_entry_indicators = {}
+                    self._trades.append(trade_record)
                     position = 0
                     stop_loss_price = 0.0
                     take_profit_price = 0.0
@@ -172,7 +183,19 @@ class BacktestEngine:
                     entry_price = exec_price
                     entry_date = idx
                     cash -= exec_price * abs(position)
-                    # Compute ATR-based stops if requested
+                    # Capture indicators at entry for trade log analysis
+                    entry_indicators = {
+                        "entry_zscore": float(row.get("zscore", 0)) if "zscore" in row.index else 0.0,
+                        "entry_rsi": float(row.get("rsi", 0)) if "rsi" in row.index else 0.0,
+                        "entry_bb_pct_b": float(row.get("bb_pct_b", 0)) if "bb_pct_b" in row.index else 0.0,
+                        "entry_volume_zscore": float(row.get("volume_zscore", 0)) if "volume_zscore" in row.index else 0.0,
+                        "entry_atr": atr,
+                        "entry_volatility": float(row.get("volatility", 0)) if "volatility" in row.index else 0.0,
+                        "entry_dist_sma200": float(row.get("dist_sma200", 0)) if "dist_sma200" in row.index else 0.0,
+                        "entry_signal_strength": strength,
+                        "entry_macd_hist": float(row.get("macd_hist", 0)) if "macd_hist" in row.index else 0.0,
+                    }
+                    self._pending_entry_indicators = entry_indicators
                     if use_atr_stops and atr > 0:
                         if signal == 1:
                             stop_loss_price = entry_price - atr_stop_mult * atr
@@ -268,6 +291,232 @@ class BacktestEngine:
             report["benchmark_return"] = round(float(benchmark_return), 4)
             report["alpha"] = round(float(alpha), 4)
         return report
+
+    # ------------------------------------------------------------------
+    # Trade Log Export & Analysis
+    # ------------------------------------------------------------------
+
+    def export_trade_log(self, path: str = "trade_log.csv") -> pd.DataFrame:
+        """Export all trades to CSV with full indicator detail.
+
+        Args:
+            path: Output file path for CSV
+
+        Returns:
+            DataFrame of all trades
+        """
+        if not self._trades:
+            logger.warning("No trades to export")
+            return pd.DataFrame()
+
+        trades_df = pd.DataFrame(self._trades)
+        os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
+        trades_df.to_csv(path, index=False)
+        logger.info(f"Trade log exported to {path} ({len(trades_df)} trades)")
+        return trades_df
+
+    def get_trade_analysis(self) -> Dict:
+        """Analyze per-trade results: stop vs TP hit rates, avg holding period, etc.
+
+        Returns:
+            Dict with detailed trade statistics
+        """
+        if not self._trades:
+            return {"error": "No trades to analyze"}
+
+        trades_df = pd.DataFrame(self._trades)
+        n = len(trades_df)
+
+        exit_counts = trades_df["exit_reason"].value_counts().to_dict()
+        stop_rate = exit_counts.get("stop", 0) / n
+        tp_rate = exit_counts.get("tp", 0) / n
+        signal_exit_rate = exit_counts.get("signal", 0) / n
+
+        wins = trades_df[trades_df["pnl"] > 0]
+        losses = trades_df[trades_df["pnl"] <= 0]
+
+        avg_win_pnl = float(wins["pnl"].mean()) if len(wins) > 0 else 0.0
+        avg_loss_pnl = float(losses["pnl"].mean()) if len(losses) > 0 else 0.0
+        expectancy = (len(wins) / n * avg_win_pnl + len(losses) / n * avg_loss_pnl) if n > 0 else 0.0
+
+        avg_holding = float(trades_df["holding_days"].mean()) if "holding_days" in trades_df.columns else 0.0
+        median_holding = float(trades_df["holding_days"].median()) if "holding_days" in trades_df.columns else 0.0
+
+        # Analyze if more signals = better or worse
+        cumulative_pnl = trades_df["pnl"].cumsum()
+        first_half_pnl = trades_df["pnl"].iloc[:n // 2].sum() if n >= 2 else 0.0
+        second_half_pnl = trades_df["pnl"].iloc[n // 2:].sum() if n >= 2 else 0.0
+
+        # Per-exit-reason P&L
+        pnl_by_exit = {}
+        for reason in trades_df["exit_reason"].unique():
+            subset = trades_df[trades_df["exit_reason"] == reason]
+            pnl_by_exit[reason] = {
+                "count": len(subset),
+                "total_pnl": round(float(subset["pnl"].sum()), 2),
+                "avg_pnl": round(float(subset["pnl"].mean()), 2),
+                "win_rate": round(float((subset["pnl"] > 0).mean()), 4),
+            }
+
+        # Indicator statistics at entry for winning vs losing trades
+        indicator_cols = [c for c in trades_df.columns
+                          if c.startswith("entry_") and c not in ("entry_date", "entry_price")]
+        indicator_analysis = {}
+        for col in indicator_cols:
+            if col in trades_df.columns and trades_df[col].notna().any():
+                win_mean = float(wins[col].mean()) if len(wins) > 0 and col in wins.columns else 0.0
+                loss_mean = float(losses[col].mean()) if len(losses) > 0 and col in losses.columns else 0.0
+                indicator_analysis[col] = {"win_avg": round(win_mean, 4), "loss_avg": round(loss_mean, 4)}
+
+        return {
+            "total_trades": n,
+            "stop_hit_rate": round(stop_rate, 4),
+            "tp_hit_rate": round(tp_rate, 4),
+            "signal_exit_rate": round(signal_exit_rate, 4),
+            "win_rate": round(float(len(wins) / n), 4),
+            "avg_win_pnl": round(avg_win_pnl, 2),
+            "avg_loss_pnl": round(avg_loss_pnl, 2),
+            "expectancy_per_trade": round(expectancy, 2),
+            "avg_holding_days": round(avg_holding, 1),
+            "median_holding_days": round(median_holding, 1),
+            "first_half_pnl": round(first_half_pnl, 2),
+            "second_half_pnl": round(second_half_pnl, 2),
+            "pnl_by_exit_reason": pnl_by_exit,
+            "indicator_analysis": indicator_analysis,
+        }
+
+    def plot_trades_overlay(self, output_dir: str = ".", symbol: str = "ASSET") -> None:
+        """Overlay buy/sell trades on a price chart for visual analysis.
+
+        Args:
+            output_dir: Directory to save chart files
+            symbol: Symbol name for chart title
+        """
+        if self._signals_df is None or self._signals_df.empty:
+            logger.warning("No signals data for trade overlay plot")
+            return
+        if not self._trades:
+            logger.warning("No trades for overlay plot")
+            return
+
+        os.makedirs(output_dir, exist_ok=True)
+        trades_df = pd.DataFrame(self._trades)
+        df = self._signals_df
+
+        fig, axes = plt.subplots(4, 1, figsize=(16, 14), gridspec_kw={"height_ratios": [3, 1, 1, 1]})
+
+        # Panel 1: Price with trade entries/exits and 200-SMA
+        ax = axes[0]
+        ax.plot(df.index, df["Close"], color="black", linewidth=0.8, label="Close")
+
+        if "bb_upper" in df.columns:
+            ax.plot(df.index, df["bb_upper"], color="gray", linewidth=0.5, alpha=0.5, label="BB Upper")
+            ax.plot(df.index, df["bb_lower"], color="gray", linewidth=0.5, alpha=0.5, label="BB Lower")
+            ax.fill_between(df.index, df["bb_upper"], df["bb_lower"], alpha=0.05, color="blue")
+
+        sma_200 = df["Close"].rolling(window=200).mean()
+        ax.plot(df.index, sma_200, color="orange", linewidth=1.0, alpha=0.7, label="200-SMA")
+
+        for _, trade in trades_df.iterrows():
+            entry_d = trade["entry_date"]
+            exit_d = trade.get("exit_date")
+            is_win = trade["pnl"] > 0
+            marker_color = "green" if is_win else "red"
+
+            if "entry_price" in trade:
+                ax.scatter(entry_d, trade["entry_price"], marker="^", color=marker_color,
+                           s=60, zorder=5, edgecolors="black", linewidths=0.5)
+            if exit_d is not None and "exit_price" in trade:
+                ax.scatter(exit_d, trade["exit_price"], marker="v", color=marker_color,
+                           s=60, zorder=5, edgecolors="black", linewidths=0.5)
+
+        ax.set_title(f"{symbol} - Trade Overlay (green=win, red=loss)")
+        ax.set_ylabel("Price")
+        ax.legend(fontsize=7, loc="upper left")
+        ax.grid(True, alpha=0.3)
+
+        # Panel 2: Z-score with entry threshold lines
+        ax2 = axes[1]
+        if "zscore" in df.columns:
+            ax2.plot(df.index, df["zscore"], color="purple", linewidth=0.7, label="Z-Score")
+            from config import settings
+            thresh = getattr(settings, "Z_SCORE_ENTRY_THRESHOLD", 2.0)
+            ax2.axhline(thresh, color="red", linestyle="--", alpha=0.5, label=f"+{thresh}")
+            ax2.axhline(-thresh, color="green", linestyle="--", alpha=0.5, label=f"-{thresh}")
+            ax2.axhline(0, color="gray", linestyle="-", alpha=0.3)
+        ax2.set_ylabel("Z-Score")
+        ax2.legend(fontsize=7)
+        ax2.grid(True, alpha=0.3)
+
+        # Panel 3: RSI
+        ax3 = axes[2]
+        if "rsi" in df.columns:
+            ax3.plot(df.index, df["rsi"], color="blue", linewidth=0.7, label="RSI")
+            from config import settings
+            ax3.axhline(getattr(settings, "RSI_OVERSOLD", 30), color="green", linestyle="--", alpha=0.5)
+            ax3.axhline(getattr(settings, "RSI_OVERBOUGHT", 70), color="red", linestyle="--", alpha=0.5)
+        ax3.set_ylabel("RSI")
+        ax3.legend(fontsize=7)
+        ax3.grid(True, alpha=0.3)
+
+        # Panel 4: Cumulative P&L
+        ax4 = axes[3]
+        if len(trades_df) > 0 and "pnl" in trades_df.columns:
+            cum_pnl = trades_df["pnl"].cumsum()
+            ax4.plot(range(len(cum_pnl)), cum_pnl, color="blue", linewidth=1.0, label="Cumulative P&L")
+            ax4.axhline(0, color="gray", linestyle="-", alpha=0.3)
+            ax4.fill_between(range(len(cum_pnl)), cum_pnl, 0,
+                             where=cum_pnl >= 0, color="green", alpha=0.2)
+            ax4.fill_between(range(len(cum_pnl)), cum_pnl, 0,
+                             where=cum_pnl < 0, color="red", alpha=0.2)
+        ax4.set_ylabel("Cumulative P&L ($)")
+        ax4.set_xlabel("Trade #")
+        ax4.legend(fontsize=7)
+        ax4.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        path = os.path.join(output_dir, f"trades_overlay_{symbol}.png")
+        plt.savefig(path, dpi=150)
+        plt.close()
+        logger.info(f"Trade overlay plot saved to {path}")
+
+    def get_benchmark_comparison(self) -> Dict:
+        """Return a detailed comparison of strategy vs buy-and-hold benchmark.
+
+        Returns:
+            Dict with side-by-side metrics
+        """
+        if self._portfolio is None or self._portfolio.empty:
+            return {}
+
+        values = self._portfolio["portfolio_value"]
+        strat_return = (values.iloc[-1] / self._initial_capital) - 1
+        strat_returns = values.pct_change().dropna()
+        strat_sharpe = (strat_returns.mean() / strat_returns.std() * np.sqrt(252)) if strat_returns.std() != 0 else 0.0
+        strat_max_dd = ((values - values.cummax()) / values.cummax()).min()
+
+        result = {
+            "strategy_return": round(float(strat_return), 4),
+            "strategy_sharpe": round(float(strat_sharpe), 4),
+            "strategy_max_drawdown": round(float(strat_max_dd), 4),
+        }
+
+        if self._benchmark is not None and len(self._benchmark) > 0:
+            bm = self._benchmark
+            bm_return = (bm.iloc[-1] / self._initial_capital) - 1
+            bm_returns = bm.pct_change().dropna()
+            bm_sharpe = (bm_returns.mean() / bm_returns.std() * np.sqrt(252)) if bm_returns.std() != 0 else 0.0
+            bm_max_dd = ((bm - bm.cummax()) / bm.cummax()).min()
+
+            result.update({
+                "benchmark_return": round(float(bm_return), 4),
+                "benchmark_sharpe": round(float(bm_sharpe), 4),
+                "benchmark_max_drawdown": round(float(bm_max_dd), 4),
+                "alpha": round(float(strat_return - bm_return), 4),
+                "outperformed": strat_return > bm_return,
+            })
+
+        return result
 
     def plot_results(self, output_dir: str = ".", regime_series: Optional[pd.Series] = None) -> None:
         """Generate and save equity curve and drawdown charts with benchmark.

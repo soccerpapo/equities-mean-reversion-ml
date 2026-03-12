@@ -152,11 +152,27 @@ class IndicatorEngine:
         shifted = series.shift(period)
         return (series - shifted) / shifted.replace(0, np.nan) * 100
 
-    def compute_all(self, df: pd.DataFrame) -> pd.DataFrame:
+    def compute_rolling_correlation(self, series_a: pd.Series, series_b: pd.Series, window: int = 60) -> pd.Series:
+        """Compute rolling correlation between two price series.
+
+        Args:
+            series_a: First price series (returns computed internally)
+            series_b: Second price series
+            window: Rolling window
+
+        Returns:
+            Series of rolling correlations
+        """
+        ret_a = series_a.pct_change()
+        ret_b = series_b.pct_change()
+        return ret_a.rolling(window=window).corr(ret_b)
+
+    def compute_all(self, df: pd.DataFrame, vix_data: pd.Series = None) -> pd.DataFrame:
         """Compute all indicators and return enriched DataFrame.
 
         Args:
             df: OHLCV DataFrame
+            vix_data: Optional VIX close price Series (indexed by date)
 
         Returns:
             DataFrame with all indicator columns added
@@ -177,43 +193,48 @@ class IndicatorEngine:
         result["volatility"] = self.compute_rolling_volatility(close)
         result["roc"] = self.compute_roc(close)
 
-        # Lagged returns
         for lag in [1, 2, 3, 5, 10]:
             result[f"return_lag_{lag}"] = returns.shift(lag)
 
-        # Rolling skewness and kurtosis of returns
         result["skewness_20"] = returns.rolling(window=20).skew()
         result["kurtosis_20"] = returns.rolling(window=20).kurt()
 
-        # Volatility ratio: short-term vol / long-term vol
         vol_5 = returns.rolling(window=5).std()
         vol_20 = returns.rolling(window=20).std()
         result["vol_ratio"] = vol_5 / vol_20.replace(0, np.nan)
 
-        # Volume trend: 5-day vs 20-day volume MA ratio
         vol_ma5 = result["Volume"].rolling(window=5).mean()
         vol_ma20 = result["Volume"].rolling(window=20).mean()
         result["volume_trend"] = vol_ma5 / vol_ma20.replace(0, np.nan)
 
-        # Price distance from SMA (50-day and 200-day) as percentage
         sma_50 = close.rolling(window=50).mean()
         sma_200 = close.rolling(window=200).mean()
         result["dist_sma50"] = (close - sma_50) / sma_50.replace(0, np.nan)
         result["dist_sma200"] = (close - sma_200) / sma_200.replace(0, np.nan)
 
-        # Mean reversion speed: autocorrelation of returns (negative = mean reverting)
         result["autocorr_10"] = returns.rolling(window=20).apply(
             lambda x: x.autocorr(lag=1) if len(x) > 1 else np.nan, raw=False
         )
 
-        # Intraday range: (High - Low) / Close
         result["intraday_range"] = (result["High"] - result["Low"]) / close.replace(0, np.nan)
-
-        # Gap: (Open - Previous Close) / Previous Close
         result["gap"] = (result["Open"] - close.shift(1)) / close.shift(1).replace(0, np.nan)
 
-        # Day of week and month
         result["day_of_week"] = result.index.dayofweek
         result["month"] = result.index.month
+
+        # Rolling return momentum (5d, 10d, 20d) for context
+        result["ret_5d"] = close.pct_change(5)
+        result["ret_10d"] = close.pct_change(10)
+        result["ret_20d"] = close.pct_change(20)
+
+        # Volatility percentile (for regime context)
+        result["vol_percentile"] = vol_20.rolling(window=252, min_periods=20).rank(pct=True)
+
+        # VIX integration (macro filter)
+        if vix_data is not None:
+            vix_aligned = vix_data.reindex(result.index).ffill()
+            result["vix"] = vix_aligned
+            result["vix_sma20"] = vix_aligned.rolling(window=20).mean()
+            result["vix_zscore"] = self.compute_zscore(vix_aligned, window=20)
 
         return result
