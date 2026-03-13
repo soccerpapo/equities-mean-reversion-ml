@@ -25,6 +25,42 @@ class BacktestEngine:
         self._pending_entry_indicators: dict = {}
         self._signals_df: Optional[pd.DataFrame] = None
 
+    def _scale_atr_multipliers(self, atr: float, price: float,
+                               base_stop_mult: float,
+                               base_profit_mult: float) -> Tuple[float, float]:
+        """Scale ATR stop/profit multipliers based on per-asset volatility.
+
+        High-volatility assets (ATR/price > 2%) get wider stops to avoid
+        premature stop-outs.  Low-vol assets keep the base multipliers.
+
+        Args:
+            atr: Current ATR value.
+            price: Current asset price.
+            base_stop_mult: Base ATR stop-loss multiplier from settings.
+            base_profit_mult: Base ATR take-profit multiplier from settings.
+
+        Returns:
+            Tuple of (scaled_stop_mult, scaled_profit_mult).
+        """
+        from config import settings
+        if not getattr(settings, "USE_VOLATILITY_SCALED_STOPS", False):
+            return base_stop_mult, base_profit_mult
+
+        if atr <= 0 or price <= 0:
+            return base_stop_mult, base_profit_mult
+
+        atr_pct = atr / price
+
+        # Scale factor: 1.0 at <=1% ATR/price, up to 1.6 at >=3%
+        if atr_pct <= 0.01:
+            scale = 1.0
+        elif atr_pct >= 0.03:
+            scale = 1.6
+        else:
+            scale = 1.0 + 0.6 * (atr_pct - 0.01) / 0.02
+
+        return base_stop_mult * scale, base_profit_mult * scale
+
     def _calculate_position_size(self, atr: float, price: float) -> float:
         """Calculate position size as a fraction of cash based on ATR volatility.
 
@@ -197,12 +233,14 @@ class BacktestEngine:
                     }
                     self._pending_entry_indicators = entry_indicators
                     if use_atr_stops and atr > 0:
+                        s_mult, p_mult = self._scale_atr_multipliers(
+                            atr, price, atr_stop_mult, atr_profit_mult)
                         if signal == 1:
-                            stop_loss_price = entry_price - atr_stop_mult * atr
-                            take_profit_price = entry_price + atr_profit_mult * atr
+                            stop_loss_price = entry_price - s_mult * atr
+                            take_profit_price = entry_price + p_mult * atr
                         else:
-                            stop_loss_price = entry_price + atr_stop_mult * atr
-                            take_profit_price = entry_price - atr_profit_mult * atr
+                            stop_loss_price = entry_price + s_mult * atr
+                            take_profit_price = entry_price - p_mult * atr
 
             port_val = cash + position * price
             portfolio_values.append({"date": idx, "portfolio_value": port_val, "cash": cash})

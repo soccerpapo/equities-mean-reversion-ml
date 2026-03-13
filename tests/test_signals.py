@@ -94,7 +94,11 @@ class TestSignalGeneration:
         df["bb_pct_b"] = 0.95
         df["volume_zscore"] = 2.0
         result = sig_gen.generate_mean_reversion_signals(df)
-        assert (result["signal"] == -1).any(), "Expected at least one SELL signal"
+        from config import settings
+        if getattr(settings, "LONG_ONLY", False):
+            assert (result["signal"] == -1).sum() == 0, "LONG_ONLY should suppress all SELL signals"
+        else:
+            assert (result["signal"] == -1).any(), "Expected at least one SELL signal"
 
     def test_hold_when_no_clear_signal(self, sig_gen):
         """When z-scores are near zero, expect mostly HOLD signals."""

@@ -823,6 +823,138 @@ def run_analyze(symbols: list, years: int = 2) -> None:
         print(f"    Equity curve: backtest_results.png")
 
 
+def run_sweep(symbols: list, years: int = 2) -> None:
+    """Run a parameter sweep over z-score thresholds and signal strengths.
+
+    Tests every combination of:
+      Z_SCORE_ENTRY_THRESHOLD: [1.5, 1.6, 1.7, 1.8, 1.9, 2.0]
+      MIN_SIGNAL_STRENGTH:     [0.20, 0.25, 0.28, 0.30, 0.35, 0.40]
+
+    Each run logs to the experiment tracker. At the end, prints a ranked
+    summary of all combinations by Sharpe ratio.
+
+    Args:
+        symbols: List of symbols to test on
+        years: Number of years of data
+    """
+    from data.fetcher import DataFetcher
+    from features.indicators import IndicatorEngine
+    from strategy.signals import SignalGenerator
+    from backtest.engine import BacktestEngine
+    from analysis.experiment_tracker import log_experiment, print_experiment_summary
+    from config import settings
+
+    z_values = [1.5, 1.6, 1.7, 1.8, 1.9, 2.0]
+    strength_values = [0.20, 0.25, 0.28, 0.30, 0.35, 0.40]
+
+    period = f"{years}y"
+    fetcher = DataFetcher()
+    vix_data = _fetch_vix(fetcher, period)
+
+    # Pre-fetch all data once to avoid repeated API calls
+    raw_data = {}
+    for symbol in symbols:
+        df = fetcher.fetch_historical(symbol, period=period)
+        if not df.empty:
+            raw_data[symbol] = df
+
+    if not raw_data:
+        logger.error("No data fetched for sweep.")
+        return
+
+    total_combos = len(z_values) * len(strength_values)
+    combo_num = 0
+    results = []
+
+    for z_thresh in z_values:
+        for min_str in strength_values:
+            combo_num += 1
+            # Temporarily override settings for this run
+            settings.Z_SCORE_ENTRY_THRESHOLD = z_thresh
+            settings.MIN_SIGNAL_STRENGTH = min_str
+
+            combo_label = f"z={z_thresh}, str={min_str}"
+            print(f"\n[{combo_num}/{total_combos}] Testing {combo_label}...")
+
+            combo_returns = []
+            combo_sharpes = []
+            combo_trades = 0
+            combo_alphas = []
+
+            for symbol, df_raw in raw_data.items():
+                ind_engine = IndicatorEngine()
+                sig_gen = SignalGenerator()
+
+                df = ind_engine.compute_all(df_raw.copy(), vix_data=vix_data)
+                df = sig_gen.generate_mean_reversion_signals(df)
+
+                bt = BacktestEngine()
+                bt._current_symbol = symbol
+                bt.run(
+                    df, df,
+                    use_atr_stops=True,
+                    atr_stop_mult=getattr(settings, "ATR_STOP_MULTIPLIER", 1.5),
+                    atr_profit_mult=getattr(settings, "ATR_PROFIT_MULTIPLIER", 2.5),
+                )
+                report = bt.get_performance_report()
+                trade_analysis = bt.get_trade_analysis()
+
+                log_experiment(
+                    symbols=[symbol],
+                    years=years,
+                    strategy="sweep",
+                    report=report,
+                    trade_analysis=trade_analysis,
+                    notes=combo_label,
+                )
+
+                combo_returns.append(report.get("total_return", 0))
+                combo_sharpes.append(report.get("sharpe_ratio", 0))
+                combo_trades += report.get("num_trades", 0)
+                if "alpha" in report:
+                    combo_alphas.append(report["alpha"])
+
+            avg_ret = sum(combo_returns) / len(combo_returns) if combo_returns else 0
+            avg_sharpe = sum(combo_sharpes) / len(combo_sharpes) if combo_sharpes else 0
+            avg_alpha = sum(combo_alphas) / len(combo_alphas) if combo_alphas else 0
+
+            results.append({
+                "z_score": z_thresh,
+                "min_strength": min_str,
+                "avg_return": avg_ret,
+                "avg_sharpe": avg_sharpe,
+                "total_trades": combo_trades,
+                "avg_alpha": avg_alpha,
+            })
+
+            print(f"  avg_return={avg_ret:.4f}, avg_sharpe={avg_sharpe:.4f}, "
+                  f"trades={combo_trades}, avg_alpha={avg_alpha:.4f}")
+
+    # Restore original settings
+    settings.Z_SCORE_ENTRY_THRESHOLD = 1.7
+    settings.MIN_SIGNAL_STRENGTH = 0.28
+
+    # Print ranked results
+    results.sort(key=lambda x: x["avg_sharpe"], reverse=True)
+    print(f"\n{'='*80}")
+    print("  PARAMETER SWEEP RESULTS (ranked by avg Sharpe)")
+    print(f"{'='*80}")
+    print(f"  {'Z-Score':>8}  {'MinStr':>8}  {'AvgReturn':>10}  {'AvgSharpe':>10}  "
+          f"{'Trades':>7}  {'AvgAlpha':>10}")
+    print("-" * 70)
+    for r in results:
+        marker = " ***" if r["avg_sharpe"] == results[0]["avg_sharpe"] else ""
+        print(f"  {r['z_score']:>8.2f}  {r['min_strength']:>8.2f}  "
+              f"{r['avg_return']:>10.4f}  {r['avg_sharpe']:>10.4f}  "
+              f"{r['total_trades']:>7}  {r['avg_alpha']:>10.4f}{marker}")
+
+    best = results[0]
+    print(f"\n  BEST: z_score={best['z_score']}, min_strength={best['min_strength']} "
+          f"=> Sharpe={best['avg_sharpe']:.4f}, Return={best['avg_return']:.4f}")
+
+    print_experiment_summary()
+
+
 def run_show_experiments() -> None:
     """Print the experiment tracker summary."""
     from analysis.experiment_tracker import print_experiment_summary
@@ -837,7 +969,7 @@ def main():
     parser = argparse.ArgumentParser(description="Equities Mean Reversion ML Trading System")
     parser.add_argument(
         "--mode",
-        choices=["backtest", "train", "trade", "compare", "analyze", "experiments"],
+        choices=["backtest", "train", "trade", "compare", "analyze", "experiments", "sweep"],
         default="backtest",
         help="Operation mode",
     )
@@ -899,6 +1031,10 @@ def main():
         symbols = args.symbols or ["SPY", "NVDA"]
         years = args.years or 2
         run_analyze(symbols, years=years)
+    elif args.mode == "sweep":
+        symbols = args.symbols or ["SPY", "NVDA"]
+        years = args.years or 2
+        run_sweep(symbols, years=years)
     elif args.mode == "experiments":
         run_show_experiments()
     elif args.mode == "compare":

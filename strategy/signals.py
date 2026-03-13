@@ -181,6 +181,16 @@ class SignalGenerator:
             signals[divergence_buy] = 1
             signal_strength[divergence_buy] = 0.4
 
+        # --- FILTER LAYER 0: Long-only mode ---
+        long_only = getattr(settings, "LONG_ONLY", False)
+        if long_only:
+            short_blocked = signals == -1
+            filtered_short = short_blocked.sum()
+            signals[short_blocked] = 0
+            signal_strength[short_blocked] = 0.0
+            if filtered_short > 0:
+                logger.info(f"Long-only mode suppressed {filtered_short} SHORT signals")
+
         # --- FILTER LAYER 1: Trend filter (200-day SMA) ---
         use_trend = getattr(settings, "USE_TREND_FILTER", False)
         if use_trend and "Close" in result.columns:
