@@ -16,7 +16,7 @@ RSI_OVERSOLD = 30
 RSI_OVERBOUGHT = 70
 BOLLINGER_WINDOW = 20
 BOLLINGER_STD = 2.0
-MAX_POSITION_SIZE_PCT = 0.05
+MAX_POSITION_SIZE_PCT = 0.12
 STOP_LOSS_PCT = 0.015
 TAKE_PROFIT_PCT = 0.05
 MAX_PORTFOLIO_DRAWDOWN_PCT = 0.1
@@ -27,6 +27,12 @@ TRADING_INTERVAL_SECONDS = 60
 
 # Long-only mode: suppress all SELL / short signals
 LONG_ONLY = True
+
+# Benchmark overlay: invest idle cash in the benchmark (SPY) when not in a
+# mean-reversion trade.  This earns the market return on uninvested capital
+# so the strategy only needs to beat the market on the trades it takes.
+USE_BENCHMARK_OVERLAY = True
+BENCHMARK_OVERLAY_SYMBOL = "SPY"
 
 # Strategy mode
 USE_ML_FILTER = False

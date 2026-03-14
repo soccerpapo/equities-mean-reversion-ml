@@ -109,6 +109,30 @@ def _prepare_signals(
     return df, regime_series
 
 
+def _fetch_benchmark_prices(fetcher, period: str) -> pd.Series:
+    """Fetch benchmark (SPY) prices for overlay mode.
+
+    Args:
+        fetcher: DataFetcher instance
+        period: yfinance period string
+
+    Returns:
+        SPY close price Series, or None if unavailable
+    """
+    from config import settings
+    if not getattr(settings, "USE_BENCHMARK_OVERLAY", False):
+        return None
+    bm_symbol = getattr(settings, "BENCHMARK_OVERLAY_SYMBOL", "SPY")
+    try:
+        bm_df = fetcher.fetch_historical(bm_symbol, period=period)
+        if not bm_df.empty:
+            logger.info(f"Fetched benchmark ({bm_symbol}) data for overlay: {len(bm_df)} rows")
+            return bm_df["Close"]
+    except Exception as e:
+        logger.warning(f"Could not fetch benchmark data: {e}")
+    return None
+
+
 def _fetch_vix(fetcher, period: str) -> pd.Series:
     """Fetch VIX data for macro filtering.
 
@@ -169,6 +193,7 @@ def run_backtest(
     sig_gen = SignalGenerator()
 
     vix_data = _fetch_vix(fetcher, period)
+    benchmark_prices = _fetch_benchmark_prices(fetcher, period)
 
     summary_rows = []
 
@@ -190,6 +215,7 @@ def run_backtest(
             use_atr_stops=use_atr_stops,
             atr_stop_mult=getattr(settings, "ATR_STOP_MULTIPLIER", 2.0),
             atr_profit_mult=getattr(settings, "ATR_PROFIT_MULTIPLIER", 3.0),
+            benchmark_prices=benchmark_prices,
         )
         report = bt.get_performance_report()
         bt.plot_results(output_dir=".", regime_series=regime_series)
@@ -742,6 +768,7 @@ def run_analyze(symbols: list, years: int = 2) -> None:
     ind_engine = IndicatorEngine()
     sig_gen = SignalGenerator()
     vix_data = _fetch_vix(fetcher, period)
+    benchmark_prices = _fetch_benchmark_prices(fetcher, period)
 
     for symbol in symbols:
         logger.info(f"Running detailed analysis for {symbol}...")
@@ -760,6 +787,7 @@ def run_analyze(symbols: list, years: int = 2) -> None:
             use_atr_stops=True,
             atr_stop_mult=getattr(settings, "ATR_STOP_MULTIPLIER", 2.0),
             atr_profit_mult=getattr(settings, "ATR_PROFIT_MULTIPLIER", 3.0),
+            benchmark_prices=benchmark_prices,
         )
 
         # Export trade log
@@ -850,6 +878,7 @@ def run_sweep(symbols: list, years: int = 2) -> None:
     period = f"{years}y"
     fetcher = DataFetcher()
     vix_data = _fetch_vix(fetcher, period)
+    benchmark_prices = _fetch_benchmark_prices(fetcher, period)
 
     # Pre-fetch all data once to avoid repeated API calls
     raw_data = {}
@@ -869,7 +898,6 @@ def run_sweep(symbols: list, years: int = 2) -> None:
     for z_thresh in z_values:
         for min_str in strength_values:
             combo_num += 1
-            # Temporarily override settings for this run
             settings.Z_SCORE_ENTRY_THRESHOLD = z_thresh
             settings.MIN_SIGNAL_STRENGTH = min_str
 
@@ -895,6 +923,7 @@ def run_sweep(symbols: list, years: int = 2) -> None:
                     use_atr_stops=True,
                     atr_stop_mult=getattr(settings, "ATR_STOP_MULTIPLIER", 1.5),
                     atr_profit_mult=getattr(settings, "ATR_PROFIT_MULTIPLIER", 2.5),
+                    benchmark_prices=benchmark_prices,
                 )
                 report = bt.get_performance_report()
                 trade_analysis = bt.get_trade_analysis()
@@ -955,6 +984,154 @@ def run_sweep(symbols: list, years: int = 2) -> None:
     print_experiment_summary()
 
 
+def run_portfolio(symbols: list, years: int = 2) -> None:
+    """Multi-symbol portfolio backtest with SPY benchmark overlay.
+
+    All idle capital is invested in SPY.  When any symbol fires a
+    mean-reversion BUY signal, a slice of the SPY position is liquidated
+    to fund the trade.  Multiple positions can be open simultaneously.
+    This maximises capital utilisation and lets the strategy earn
+    market return + incremental mean-reversion alpha.
+
+    Args:
+        symbols: List of NON-benchmark symbols to trade mean-reversion on
+        years: Number of years of data
+    """
+    from data.fetcher import DataFetcher
+    from features.indicators import IndicatorEngine
+    from strategy.signals import SignalGenerator
+    from backtest.engine import BacktestEngine
+    from analysis.experiment_tracker import log_experiment
+    from config import settings
+
+    period = f"{years}y"
+    fetcher = DataFetcher()
+    ind_engine = IndicatorEngine()
+    sig_gen = SignalGenerator()
+
+    vix_data = _fetch_vix(fetcher, period)
+
+    bm_symbol = getattr(settings, "BENCHMARK_OVERLAY_SYMBOL", "SPY")
+    bm_df = fetcher.fetch_historical(bm_symbol, period=period)
+    if bm_df.empty:
+        logger.error(f"Could not fetch benchmark ({bm_symbol}) data.")
+        return
+    benchmark_prices = bm_df["Close"]
+    logger.info(f"Fetched benchmark ({bm_symbol}): {len(bm_df)} rows")
+
+    # Remove benchmark from trade symbols to avoid trading SPY on a SPY overlay
+    trade_symbols = [s for s in symbols if s != bm_symbol]
+    if not trade_symbols:
+        logger.error("No non-benchmark symbols provided. Add symbols besides SPY.")
+        return
+
+    # Prepare signals for each symbol
+    signals_by_symbol = {}
+    for symbol in trade_symbols:
+        df, _ = _prepare_signals(
+            symbol, period, fetcher, ind_engine, sig_gen,
+            use_ml=True, use_regime=False,
+            vix_data=vix_data,
+        )
+        if df is not None and "signal" in df.columns:
+            signals_by_symbol[symbol] = df
+            sig_count = (df["signal"] != 0).sum()
+            logger.info(f"  {symbol}: {sig_count} signals over {len(df)} bars")
+
+    if not signals_by_symbol:
+        logger.error("No signals generated for any symbol.")
+        return
+
+    # Run the multi-symbol portfolio backtest
+    bt = BacktestEngine()
+    bt.run_portfolio(
+        signals_by_symbol=signals_by_symbol,
+        benchmark_prices=benchmark_prices,
+        use_atr_stops=True,
+        atr_stop_mult=getattr(settings, "ATR_STOP_MULTIPLIER", 2.0),
+        atr_profit_mult=getattr(settings, "ATR_PROFIT_MULTIPLIER", 2.5),
+        max_concurrent_positions=len(trade_symbols),
+    )
+
+    report = bt.get_performance_report()
+    trade_analysis = bt.get_trade_analysis()
+    benchmark = bt.get_benchmark_comparison()
+
+    # Print results
+    print(f"\n{'='*70}")
+    print(f"  PORTFOLIO BACKTEST: SPY overlay + mean-reversion on {trade_symbols}")
+    print(f"{'='*70}")
+    for k, v in report.items():
+        if isinstance(v, float):
+            print(f"  {k}: {v:.4f}")
+        else:
+            print(f"  {k}: {v}")
+
+    if benchmark:
+        print(f"\n  --- vs SPY Buy & Hold ---")
+        print(f"  Strategy Return: {benchmark.get('strategy_return', 0):.4f}")
+        print(f"  Benchmark Return: {benchmark.get('benchmark_return', 0):.4f}")
+        print(f"  Alpha: {benchmark.get('alpha', 0):.4f}")
+        print(f"  Strategy Sharpe: {benchmark.get('strategy_sharpe', 0):.4f}")
+        print(f"  Benchmark Sharpe: {benchmark.get('benchmark_sharpe', 0):.4f}")
+        print(f"  Strategy Drawdown: {benchmark.get('strategy_max_drawdown', 0):.4f}")
+        print(f"  Benchmark Drawdown: {benchmark.get('benchmark_max_drawdown', 0):.4f}")
+        outperformed = benchmark.get("outperformed", False)
+        print(f"  Outperformed: {outperformed}")
+
+    if trade_analysis:
+        print(f"\n  --- Trade Analysis ---")
+        print(f"  Total Trades: {trade_analysis.get('total_trades', 0)}")
+        print(f"  Stop Hit Rate: {trade_analysis.get('stop_hit_rate', 0):.1%}")
+        print(f"  TP Hit Rate:   {trade_analysis.get('tp_hit_rate', 0):.1%}")
+        print(f"  Expectancy:    ${trade_analysis.get('expectancy_per_trade', 0):.2f}/trade")
+        print(f"  Avg Holding:   {trade_analysis.get('avg_holding_days', 0):.1f} days")
+
+        by_reason = trade_analysis.get("pnl_by_exit_reason", {})
+        if by_reason:
+            print(f"\n  --- P&L by Exit Reason ---")
+            for reason, info in by_reason.items():
+                print(f"    {reason}: {info['count']} trades, "
+                      f"total=${info['total_pnl']:.0f}, win_rate={info['win_rate']:.1%}")
+
+        # Per-symbol breakdown
+        if bt._trades:
+            import pandas as pd
+            trades_df = pd.DataFrame(bt._trades)
+            print(f"\n  --- Per-Symbol Breakdown ---")
+            for sym in trades_df["symbol"].unique():
+                sym_trades = trades_df[trades_df["symbol"] == sym]
+                sym_pnl = sym_trades["pnl"].sum()
+                sym_wins = (sym_trades["pnl"] > 0).sum()
+                sym_total = len(sym_trades)
+                print(f"    {sym}: {sym_total} trades, P&L=${sym_pnl:.0f}, "
+                      f"win_rate={sym_wins/sym_total:.1%}")
+
+    # Plot results
+    bt.plot_results(output_dir=".")
+
+    # Export trade log
+    bt.export_trade_log("trade_log_PORTFOLIO.csv")
+
+    # Log experiment
+    log_experiment(
+        symbols=trade_symbols,
+        years=years,
+        strategy="portfolio_overlay",
+        report=report,
+        trade_analysis=trade_analysis,
+        notes=f"SPY overlay + {trade_symbols}",
+    )
+
+    # Capital utilization
+    if bt._portfolio is not None and "active_positions" in bt._portfolio.columns:
+        avg_active = bt._portfolio["active_positions"].mean()
+        pct_deployed = (bt._portfolio["active_positions"] > 0).mean()
+        print(f"\n  --- Capital Utilization ---")
+        print(f"  Avg concurrent positions: {avg_active:.2f}")
+        print(f"  % of days with active trades: {pct_deployed:.1%}")
+
+
 def run_show_experiments() -> None:
     """Print the experiment tracker summary."""
     from analysis.experiment_tracker import print_experiment_summary
@@ -969,7 +1146,7 @@ def main():
     parser = argparse.ArgumentParser(description="Equities Mean Reversion ML Trading System")
     parser.add_argument(
         "--mode",
-        choices=["backtest", "train", "trade", "compare", "analyze", "experiments", "sweep"],
+        choices=["backtest", "portfolio", "train", "trade", "compare", "analyze", "experiments", "sweep"],
         default="backtest",
         help="Operation mode",
     )
@@ -1027,6 +1204,10 @@ def main():
         if strategy in ("combined", "all"):
             run_combined_backtest(symbols, years=years)
 
+    elif args.mode == "portfolio":
+        symbols = args.symbols or settings.SYMBOLS
+        years = args.years or 2
+        run_portfolio(symbols, years=years)
     elif args.mode == "analyze":
         symbols = args.symbols or ["SPY", "NVDA"]
         years = args.years or 2

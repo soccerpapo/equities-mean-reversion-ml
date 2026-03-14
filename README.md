@@ -21,53 +21,68 @@ A production-ready algorithmic trading system that combines classical mean rever
 │                                                    │                         │
 │  ┌──────────────────────┐    ┌────────────┐    ┌───▼───────────────────────┐ │
 │  │  Regime Detector     │    │    Risk    │◀───│  Backtest / Execution     │ │
-│  │  (GMM, 3 regimes)    │    │  Manager   │    │  + Trade Analysis         │ │
-│  └──────────────────────┘    └────────────┘    │  + Experiment Tracker     │ │
-│                                                │  + Parameter Sweep        │ │
+│  │  (GMM, 3 regimes)    │    │  Manager   │    │  + Portfolio Engine       │ │
+│  └──────────────────────┘    └────────────┘    │  + Benchmark Overlay      │ │
+│                                                │  + Trade Analysis         │ │
+│                                                │  + Experiment Tracker     │ │
 │                                                └───────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Recent Improvements & Results
+## Results: Positive Alpha Achieved
 
-### Before vs After (2-year backtest, SPY + NVDA)
+### Portfolio Backtest (2-year, 7 symbols on SPY overlay)
 
-| Metric | Before | After | Improvement |
-|--------|--------|-------|-------------|
-| **SPY Sharpe** | 0.06 | **0.31** | 5.2x |
-| **NVDA Sharpe** | 0.30 | **1.17** | 3.9x |
-| SPY Win Rate | 50.0% | **57.1%** | +7pp |
-| NVDA Win Rate | 37.5% | **66.7%** | +29pp |
-| SPY Profit Factor | 1.11 | **1.42** | +28% |
-| NVDA Profit Factor | 1.00 | **6.23** | massive |
-| SPY Max Drawdown | -6.78% | **-0.32%** | 21x safer |
-| NVDA Max Drawdown | -30.3% | **-1.9%** | 16x safer |
-| SPY Expectancy | $3.38/trade | **$20.30/trade** | 6x |
-| NVDA Expectancy | $3.14/trade | **$1,718/trade** | 547x |
+| Metric | Strategy | SPY Buy & Hold | Delta |
+|--------|----------|----------------|-------|
+| **Return** | **39.92%** | 31.79% | **+8.13%** |
+| **Alpha** | **+8.13%** | -- | -- |
+| **Sharpe** | **1.075** | 0.928 | **+0.147** |
+| **Sortino** | **1.351** | -- | -- |
+| Max Drawdown | -19.41% | -18.76% | -0.65% |
+| Trades | 18 | -- | -- |
+| Win Rate | 61.1% | -- | -- |
+| Profit Factor | 3.40 | -- | -- |
+| Expectancy | $658/trade | -- | -- |
+| Capital Utilization | 44.3% | 100% | -- |
 
-### What drove the improvement
+### Per-Symbol Alpha Breakdown
 
-1. **Long-only mode** — analysis revealed every winning trade was a buy-the-dip entry; all short signals were losing money. Suppressing shorts eliminated the biggest source of losses.
-2. **Volatility-scaled ATR stops** — high-vol names like NVDA now get proportionally wider stops (up to 1.6x the base multiplier), cutting premature stop-outs from 62.5% to 33.3%.
-3. **Larger position sizing** — increased from 3% to 5% of portfolio per trade, giving winning trades more dollar impact while filters keep drawdown controlled.
-4. **5-layer filter chain** — added long-only filter as layer 0, on top of the existing trend, volatility, distance-from-SMA, and signal strength filters.
-5. **Parameter sweep** — systematic grid search over z-score thresholds (1.5-2.0) and signal strengths (0.20-0.40) confirmed z=1.7 as the optimal entry threshold.
+| Symbol | Trades | P&L | Win Rate |
+|--------|--------|-----|----------|
+| NVDA | 2 | +$4,517 | 100% |
+| TSLA | 2 | +$3,784 | 100% |
+| AAPL | 2 | +$2,767 | 100% |
+| AMZN | 2 | +$755 | 50% |
+| GOOGL | 2 | +$589 | 50% |
+| META | 4 | +$528 | 50% |
+| MSFT | 4 | -$1,089 | 25% |
 
-### Current limitations
+### How we got here
 
-Both symbols still show negative alpha vs buy-and-hold. This is structural: a mean reversion strategy that sits in cash 95% of the time will underperform a pure bull market. The strategy's value is **risk-adjusted** — SPY drawdown of -0.32% vs the benchmark's -18.76%.
+The system went through three phases of improvement:
+
+**Phase 1: Risk control** -- Long-only mode, 5-layer filter chain, volatility-scaled ATR stops, parameter sweep. Result: near-zero drawdown but negative alpha (sitting in cash 95% of the time while the market rallied).
+
+**Phase 2: Capital utilization** -- Three structural changes solved the alpha problem:
+
+1. **Benchmark overlay** -- Idle cash is invested in SPY instead of earning 0%. When a mean-reversion signal fires, SPY shares are liquidated to fund the trade. On exit, proceeds return to SPY. The strategy earns market return + incremental alpha from trades.
+2. **Multi-symbol portfolio engine** -- A single portfolio holds SPY as its base and trades mean-reversion dips across 7 symbols concurrently. More symbols = more dip opportunities = higher capital utilization (15% -> 44%).
+3. **Larger position sizing** -- Increased from 5% to 12% per trade. Drawdowns were well-controlled, leaving room to amplify winning trades.
+
+**Phase 3 (current):** Alpha is positive and diversified across multiple names. The strategy beats SPY buy-and-hold by +8.13% with a Sharpe of 1.075.
 
 ## Features
 
 ### Signal Generation & Filtering
 - **Mean Reversion Signals**: Z-score, RSI, Bollinger Bands, and volume confirmation with weighted scoring
 - **5-Layer Filter Chain**: Each filter logs how many signals it suppressed
-  0. **Long-Only Filter** — suppresses all short/sell signals (configurable)
-  1. **Trend Filter** (200-day SMA) — buy dips only in uptrends
-  2. **Volatility Regime Filter** — trade only when 20-day vol is between 20th-80th percentile
-  3. **Distance-from-Fair-Value Filter** — block entries when price is >8% from 200-SMA
-  4. **Minimum Signal Strength** — require weighted confirmation score >= 0.28
-- **VIX Macro Filter** (opt-in) — block all entries when VIX > 30
+  0. **Long-Only Filter** -- suppresses all short/sell signals (configurable)
+  1. **Trend Filter** (200-day SMA) -- buy dips only in uptrends
+  2. **Volatility Regime Filter** -- trade only when 20-day vol is between 20th-80th percentile
+  3. **Distance-from-Fair-Value Filter** -- block entries when price is >8% from 200-SMA
+  4. **Minimum Signal Strength** -- require weighted confirmation score >= 0.28
+- **VIX Macro Filter** (opt-in) -- block all entries when VIX > 30
 
 ### Strategies
 - **Mean Reversion** with multi-indicator confirmation, long-only mode, and configurable looseness
@@ -76,9 +91,15 @@ Both symbols still show negative alpha vs buy-and-hold. This is structural: a me
 - **Adaptive Regime Switching**: GMM-driven allocation between strategies
 - **Combined Portfolio**: 50% momentum + 30% pairs + 20% cash reserve
 
+### Portfolio Engine & Benchmark Overlay
+- **Benchmark Overlay**: All idle capital earns the market return (SPY) instead of sitting in cash
+- **Multi-Symbol Concurrent Positions**: Trade mean-reversion dips across many symbols simultaneously
+- **Capital Utilization Tracking**: Reports avg concurrent positions and % of days with active trades
+- **Per-Symbol P&L Breakdown**: See which symbols contribute alpha and which are a drag
+
 ### Trade Analysis & Alpha Discovery
 - **Trade Log Export**: CSV with all indicators at entry (z-score, RSI, BB %B, volume, ATR, volatility, distance from SMA, MACD histogram, signal strength)
-- **Trade Overlay Charts**: 4-panel visualization — price with buy/sell markers + Bollinger Bands + 200-SMA, z-score, RSI, cumulative P&L
+- **Trade Overlay Charts**: 4-panel visualization -- price with buy/sell markers + Bollinger Bands + 200-SMA, z-score, RSI, cumulative P&L
 - **Per-Trade Analysis**: Stop vs take-profit hit rates, expectancy per trade, P&L by exit reason, winner vs loser indicator comparison
 - **Always-On Benchmark**: Every run compares return, Sharpe, and max drawdown against SPY buy-and-hold
 - **Experiment Tracker**: CSV-based log of every parameter combination tested, sortable by Sharpe
@@ -87,7 +108,7 @@ Both symbols still show negative alpha vs buy-and-hold. This is structural: a me
 ### Risk Management
 - **ML Signal Filter**: LightGBM classifier with walk-forward validation (togglable with `--no-ml`)
 - **Volatility-Scaled ATR Stops**: Base stop = 1.5x ATR, base TP = 2.5x ATR; automatically widened up to 1.6x for high-volatility names
-- **Position Sizing**: 5% of portfolio per trade, scaled by signal strength and volatility
+- **Position Sizing**: 12% of portfolio per trade, scaled by signal strength and volatility
 - **Max Drawdown Circuit Breaker**: 10% portfolio-level stop
 - **Paper Trading**: Full Alpaca API integration with bracket orders
 
@@ -108,12 +129,27 @@ pip install -r requirements.txt
 
 ```bash
 cp .env.example .env
-# Edit .env with your Alpaca paper trading API keys (optional — backtesting works without them)
+# Edit .env with your Alpaca paper trading API keys (optional -- backtesting works without them)
 ```
 
 ## Usage
 
-### Analyze trade quality (start here)
+### Portfolio backtest (recommended)
+
+The `portfolio` mode runs the full system: SPY overlay + mean-reversion across multiple symbols. This is the mode that produces positive alpha.
+
+```bash
+python main.py --mode portfolio --symbols SPY NVDA AAPL MSFT GOOGL AMZN META TSLA --years 2
+```
+
+Output includes:
+- Performance report with alpha vs SPY buy-and-hold
+- Per-symbol P&L breakdown
+- Trade analysis (stop/TP rates, expectancy, holding periods)
+- Capital utilization metrics
+- `trade_log_PORTFOLIO.csv` and `backtest_results.png`
+
+### Analyze trade quality
 
 The `analyze` mode exports trade logs, generates overlay charts, and prints detailed winner-vs-loser indicator comparisons.
 
@@ -123,12 +159,12 @@ python main.py --mode analyze --symbols SPY NVDA --years 5
 ```
 
 Output includes:
-- `trade_log_SPY.csv` / `trade_log_NVDA.csv` — every trade with all indicators at entry
-- `trades_overlay_SPY.png` — price chart with buy/sell markers, z-score, RSI, cumulative P&L
+- `trade_log_SPY.csv` / `trade_log_NVDA.csv` -- every trade with all indicators at entry
+- `trades_overlay_SPY.png` -- price chart with buy/sell markers, z-score, RSI, cumulative P&L
 - Per-trade analysis: stop/TP hit rates, expectancy, indicator differences between winners and losers
 - Actionable warnings (e.g., "stops hit more often than TPs -- consider widening stop")
 
-### Backtest with full reporting
+### Backtest individual strategies
 
 ```bash
 # Mean reversion with all filters active (default)
@@ -144,20 +180,12 @@ python main.py --mode backtest --strategy adaptive
 python main.py --mode backtest --strategy combined
 ```
 
-Every backtest prints:
-- Performance report with benchmark comparison
-- Trade analysis (stop/TP rates, expectancy, holding periods)
-- P&L breakdown by exit reason
-- Winner vs loser indicator comparison
-- Results are automatically logged to the experiment tracker
-
 ### Parameter sweep
 
 Systematically tests all combinations of z-score thresholds and signal strengths, logging every result.
 
 ```bash
 python main.py --mode sweep --symbols SPY NVDA --years 2
-python main.py --mode sweep --symbols SPY NVDA --years 5
 ```
 
 ### Compare all strategies
@@ -233,6 +261,8 @@ Static allocation: 50% Momentum + 30% Pairs + 20% Cash Reserve.
 | Parameter | Default | Notes |
 |-----------|---------|-------|
 | Long-only mode | True | Suppress all short signals |
+| Benchmark overlay | True | Idle cash invested in SPY |
+| Benchmark symbol | SPY | Configurable |
 | Z-score entry threshold | 1.7 | Lower = more trades, higher = fewer/stronger |
 | Min signal strength | 0.28 | Weighted confirmation score minimum |
 | Min optional confirmations | 1 | Beyond z-score (1=looser, 2=tighter) |
@@ -242,7 +272,7 @@ Static allocation: 50% Momentum + 30% Pairs + 20% Cash Reserve.
 | Volatility-scaled stops | True | Auto-widen stops for high-vol assets |
 | Stop loss (fixed fallback) | 1.5% | Used when ATR unavailable |
 | Take profit (fixed fallback) | 5.0% | |
-| Max position size | 5% of portfolio | |
+| Max position size | 12% of portfolio | Scaled by signal strength and volatility |
 | Max portfolio drawdown | 10% | Circuit breaker |
 | Trend SMA period | 200 days | |
 | Max distance from 200-SMA | 8% | |
@@ -255,23 +285,23 @@ All parameters are in `config/settings.py` and are logged to the experiment trac
 
 The recommended workflow for finding repeatable alpha:
 
-1. **Run `--mode analyze`** on your target symbols to get trade logs and overlay charts
-2. **Inspect the trade log CSV** — look at indicators at entry for winning vs losing trades
-3. **Check the overlay chart** — are you buying real dips or fighting the trend?
-4. **Read the trade analysis** — if stops > TPs, your stop is too tight or entries are bad
-5. **Tweak parameters** in `config/settings.py` (e.g., loosen z-score, widen stops)
-6. **Re-run backtest** — results auto-log to the experiment tracker
-7. **Run `--mode sweep`** to systematically test parameter grid
-8. **Run `--mode experiments`** to compare all parameter combinations by Sharpe ratio
-9. **Repeat** until Sharpe > 0.5 and profit factor > 1.3 while keeping drawdown < 10%
+1. **Run `--mode portfolio`** with your target symbols to get the full overlay backtest
+2. **Inspect the per-symbol breakdown** -- which names contribute alpha and which are a drag?
+3. **Run `--mode analyze`** on promising symbols to get trade logs and overlay charts
+4. **Check the trade log CSV** -- look at indicators at entry for winning vs losing trades
+5. **Read the trade analysis** -- if stops > TPs, your stop is too tight or entries are bad
+6. **Tweak parameters** in `config/settings.py` (e.g., loosen z-score, widen stops)
+7. **Re-run backtest** -- results auto-log to the experiment tracker
+8. **Run `--mode sweep`** to systematically test parameter grid
+9. **Run `--mode experiments`** to compare all parameter combinations by Sharpe ratio
 
 ## Project Structure
 
 ```
 equities-mean-reversion-ml/
-├── main.py                  # CLI (backtest, analyze, compare, sweep, train, trade, experiments)
+├── main.py                  # CLI (portfolio, backtest, analyze, compare, sweep, train, trade, experiments)
 ├── config/
-│   └── settings.py          # All tunable parameters
+│   └── settings.py          # All tunable parameters (overlay, filters, sizing, stops)
 ├── data/
 │   └── fetcher.py           # yfinance + Alpaca data fetching
 ├── features/
@@ -284,7 +314,7 @@ equities-mean-reversion-ml/
 │   ├── momentum.py          # Trend following with momentum scoring
 │   └── adaptive.py          # Regime-switching strategy orchestrator
 ├── backtest/
-│   └── engine.py            # Event-driven backtester with trade logging and analysis
+│   └── engine.py            # Event-driven backtester with portfolio engine and benchmark overlay
 ├── analysis/
 │   ├── __init__.py
 │   └── experiment_tracker.py # CSV-based parameter experiment logging

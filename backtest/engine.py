@@ -107,18 +107,28 @@ class BacktestEngine:
         atr_stop_mult: float = 2.0,
         atr_profit_mult: float = 3.0,
         regimes: Optional[pd.Series] = None,
+        benchmark_prices: Optional[pd.Series] = None,
     ) -> pd.DataFrame:
         """Simulate trades from signals DataFrame.
+
+        When USE_BENCHMARK_OVERLAY is True and benchmark_prices is provided,
+        idle cash is invested in the benchmark (SPY).  On each bar the idle
+        cash earns the benchmark's daily return.  When a mean-reversion trade
+        is entered, the required capital is liquidated from the benchmark
+        position at the current price; when the trade exits, proceeds are
+        reinvested.  This way the strategy earns market return + incremental
+        alpha from trades rather than sitting in 0% cash.
 
         Args:
             df: OHLCV DataFrame (price data)
             signals_df: DataFrame with 'signal' and 'signal_strength' columns
             initial_capital: Starting portfolio value
-            use_atr_stops: Whether to use ATR-based dynamic stops instead of
-                           fixed percentage stops
-            atr_stop_mult: ATR multiplier for stop-loss (used when use_atr_stops=True)
-            atr_profit_mult: ATR multiplier for take-profit (used when use_atr_stops=True)
-            regimes: Optional Series of regime labels per date for logging/plotting
+            use_atr_stops: Whether to use ATR-based dynamic stops
+            atr_stop_mult: ATR multiplier for stop-loss
+            atr_profit_mult: ATR multiplier for take-profit
+            regimes: Optional Series of regime labels per date
+            benchmark_prices: Optional Series of benchmark close prices for
+                              overlay mode (indexed by date)
 
         Returns:
             DataFrame with portfolio equity curve
@@ -131,6 +141,8 @@ class BacktestEngine:
         self._signals_df = signals_df
         self._pending_entry_indicators = {}
 
+        use_overlay = getattr(settings, "USE_BENCHMARK_OVERLAY", False) and benchmark_prices is not None
+
         cash = initial_capital
         position = 0
         entry_price = 0.0
@@ -139,14 +151,24 @@ class BacktestEngine:
         take_profit_price = 0.0
         portfolio_values = []
 
-        # Compute buy-and-hold benchmark using Close prices
+        # Benchmark overlay state: idle cash is converted to benchmark_shares
+        benchmark_shares = 0.0
+        if use_overlay:
+            first_bm_price = float(benchmark_prices.iloc[0])
+            if first_bm_price > 0:
+                benchmark_shares = cash / first_bm_price
+                cash = 0.0
+
+        # Compute buy-and-hold benchmark for comparison
         close_prices = signals_df["Close"] if "Close" in signals_df.columns else df["Close"]
         first_price = close_prices.iloc[0]
         if first_price and first_price != 0:
-            benchmark_shares = initial_capital / first_price
-            self._benchmark = close_prices * benchmark_shares
+            bh_shares = initial_capital / first_price
+            self._benchmark = close_prices * bh_shares
         else:
             self._benchmark = None
+
+        prev_bm_price = float(benchmark_prices.iloc[0]) if use_overlay else 0.0
 
         for idx, row in signals_df.iterrows():
             price = row["Close"] if "Close" in row.index else df.loc[idx, "Close"]
@@ -154,9 +176,16 @@ class BacktestEngine:
             strength = float(row.get("signal_strength", 0.5))
             atr = float(row.get("atr", 0.0)) if "atr" in row.index else 0.0
 
+            # Current benchmark price for overlay
+            bm_price = 0.0
+            if use_overlay and idx in benchmark_prices.index:
+                bm_price = float(benchmark_prices.loc[idx])
+            elif use_overlay:
+                bm_price = prev_bm_price
+
             exec_price = price * (1 + self.SLIPPAGE) if signal == 1 else price * (1 - self.SLIPPAGE)
 
-            # Check ATR or fixed stops for open positions
+            # Check stops for open positions
             if position != 0:
                 exit_by_stop = False
                 if use_atr_stops and stop_loss_price > 0:
@@ -187,7 +216,13 @@ class BacktestEngine:
                 if exit_by_stop or exit_by_tp or exit_by_signal:
                     exit_exec = price * (1 - self.SLIPPAGE) if position > 0 else price * (1 + self.SLIPPAGE)
                     pnl = (exit_exec - entry_price) * position
-                    cash += exit_exec * abs(position)
+                    proceeds = exit_exec * abs(position)
+
+                    if use_overlay and bm_price > 0:
+                        benchmark_shares += proceeds / bm_price
+                    else:
+                        cash += proceeds
+
                     trade_record = {
                         "entry_date": entry_date,
                         "exit_date": idx,
@@ -212,14 +247,25 @@ class BacktestEngine:
             # Enter new position
             if signal != 0 and position == 0:
                 position_size_pct = self._calculate_position_size(atr, price)
-                max_invest = cash * position_size_pct * strength
+
+                # Determine available capital
+                if use_overlay and bm_price > 0:
+                    available = benchmark_shares * bm_price
+                else:
+                    available = cash
+
+                max_invest = available * position_size_pct * strength
                 shares = int(max_invest / exec_price)
                 if shares > 0:
+                    cost = exec_price * shares
+                    if use_overlay and bm_price > 0:
+                        benchmark_shares -= cost / bm_price
+                    else:
+                        cash -= cost
+
                     position = shares if signal == 1 else -shares
                     entry_price = exec_price
                     entry_date = idx
-                    cash -= exec_price * abs(position)
-                    # Capture indicators at entry for trade log analysis
                     entry_indicators = {
                         "entry_zscore": float(row.get("zscore", 0)) if "zscore" in row.index else 0.0,
                         "entry_rsi": float(row.get("rsi", 0)) if "rsi" in row.index else 0.0,
@@ -242,8 +288,13 @@ class BacktestEngine:
                             stop_loss_price = entry_price + s_mult * atr
                             take_profit_price = entry_price - p_mult * atr
 
-            port_val = cash + position * price
+            # Portfolio value = benchmark position + active trade position + residual cash
+            idle_value = benchmark_shares * bm_price if use_overlay and bm_price > 0 else cash
+            port_val = idle_value + position * price + (cash if use_overlay else 0)
             portfolio_values.append({"date": idx, "portfolio_value": port_val, "cash": cash})
+
+            if use_overlay and bm_price > 0:
+                prev_bm_price = bm_price
 
         self._portfolio = pd.DataFrame(portfolio_values).set_index("date")
         return self._portfolio
@@ -1486,5 +1537,211 @@ class BacktestEngine:
         if len(close_prices) > 0 and close_prices.iloc[0] != 0:
             benchmark_shares = initial_capital / close_prices.iloc[0]
             self._benchmark = close_prices * benchmark_shares
+
+        return self._portfolio
+
+    def run_portfolio(
+        self,
+        signals_by_symbol: Dict[str, pd.DataFrame],
+        benchmark_prices: pd.Series,
+        initial_capital: float = 100_000.0,
+        use_atr_stops: bool = True,
+        atr_stop_mult: float = 2.0,
+        atr_profit_mult: float = 3.0,
+        max_concurrent_positions: int = 5,
+    ) -> pd.DataFrame:
+        """Multi-symbol portfolio backtest with benchmark overlay.
+
+        Holds all idle capital in the benchmark (SPY).  When any symbol fires
+        a mean-reversion signal, liquidates a slice of the benchmark position
+        to fund the trade.  On exit, proceeds return to the benchmark pool.
+        Supports multiple concurrent positions across different symbols.
+
+        Args:
+            signals_by_symbol: Dict mapping symbol -> DataFrame with signal
+                columns (signal, signal_strength, Close, atr, etc.)
+            benchmark_prices: Series of benchmark close prices indexed by date
+            initial_capital: Starting portfolio value
+            use_atr_stops: Whether to use ATR-based dynamic stops
+            atr_stop_mult: Base ATR stop multiplier
+            atr_profit_mult: Base ATR profit multiplier
+            max_concurrent_positions: Max simultaneous active trades
+
+        Returns:
+            DataFrame with portfolio equity curve
+        """
+        from config import settings
+
+        self._initial_capital = initial_capital
+        self._trades = []
+        self._pending_entry_indicators = {}
+
+        # Collect all unique dates across all symbols
+        all_dates = sorted(
+            set().union(*(df.index for df in signals_by_symbol.values()))
+        )
+        if not all_dates:
+            return pd.DataFrame()
+
+        # Start fully invested in benchmark
+        first_bm_price = float(benchmark_prices.iloc[0])
+        bm_shares = initial_capital / first_bm_price if first_bm_price > 0 else 0.0
+        residual_cash = 0.0
+
+        # Active positions: {symbol: {shares, entry_price, entry_date, stop, tp, indicators}}
+        active_positions: Dict[str, dict] = {}
+
+        portfolio_values = []
+        prev_bm_price = first_bm_price
+
+        for date in all_dates:
+            bm_price = float(benchmark_prices.loc[date]) if date in benchmark_prices.index else prev_bm_price
+
+            # --- Phase 1: Check exits for all active positions ---
+            symbols_to_close = []
+            for sym, pos in active_positions.items():
+                if sym not in signals_by_symbol or date not in signals_by_symbol[sym].index:
+                    continue
+                row = signals_by_symbol[sym].loc[date]
+                price = float(row["Close"])
+                signal = int(row.get("signal", 0))
+
+                exit_by_stop = False
+                exit_by_tp = False
+
+                if use_atr_stops and pos["stop"] > 0:
+                    if pos["shares"] > 0 and price <= pos["stop"]:
+                        exit_by_stop = True
+                    elif pos["shares"] < 0 and price >= pos["stop"]:
+                        exit_by_stop = True
+
+                if use_atr_stops and pos["tp"] > 0:
+                    if pos["shares"] > 0 and price >= pos["tp"]:
+                        exit_by_tp = True
+                    elif pos["shares"] < 0 and price <= pos["tp"]:
+                        exit_by_tp = True
+
+                exit_by_signal = (pos["shares"] > 0 and signal == -1) or (pos["shares"] < 0 and signal == 1)
+
+                if exit_by_stop or exit_by_tp or exit_by_signal:
+                    exit_exec = price * (1 - self.SLIPPAGE) if pos["shares"] > 0 else price * (1 + self.SLIPPAGE)
+                    pnl = (exit_exec - pos["entry_price"]) * pos["shares"]
+                    proceeds = exit_exec * abs(pos["shares"])
+
+                    if bm_price > 0:
+                        bm_shares += proceeds / bm_price
+
+                    trade_record = {
+                        "entry_date": pos["entry_date"],
+                        "exit_date": date,
+                        "symbol": sym,
+                        "side": "long" if pos["shares"] > 0 else "short",
+                        "entry_price": pos["entry_price"],
+                        "exit_price": exit_exec,
+                        "qty": abs(pos["shares"]),
+                        "pnl": pnl,
+                        "return_pct": (exit_exec / pos["entry_price"] - 1) * (1 if pos["shares"] > 0 else -1),
+                        "holding_days": (date - pos["entry_date"]).days if hasattr(date - pos["entry_date"], "days") else 0,
+                        "exit_reason": "stop" if exit_by_stop else ("tp" if exit_by_tp else "signal"),
+                    }
+                    trade_record.update(pos.get("indicators", {}))
+                    self._trades.append(trade_record)
+                    symbols_to_close.append(sym)
+
+            for sym in symbols_to_close:
+                del active_positions[sym]
+
+            # --- Phase 2: Check entries across all symbols ---
+            for sym, sig_df in signals_by_symbol.items():
+                if sym in active_positions:
+                    continue
+                if len(active_positions) >= max_concurrent_positions:
+                    break
+                if date not in sig_df.index:
+                    continue
+
+                row = sig_df.loc[date]
+                signal = int(row.get("signal", 0))
+                if signal == 0:
+                    continue
+
+                price = float(row["Close"])
+                strength = float(row.get("signal_strength", 0.5))
+                atr = float(row.get("atr", 0.0)) if "atr" in row.index else 0.0
+
+                exec_price = price * (1 + self.SLIPPAGE) if signal == 1 else price * (1 - self.SLIPPAGE)
+
+                position_size_pct = self._calculate_position_size(atr, price)
+                available = bm_shares * bm_price if bm_price > 0 else 0
+                max_invest = available * position_size_pct * strength
+                shares = int(max_invest / exec_price)
+
+                if shares > 0:
+                    cost = exec_price * shares
+                    if bm_price > 0:
+                        bm_shares -= cost / bm_price
+
+                    s_mult, p_mult = atr_stop_mult, atr_profit_mult
+                    stop_price = 0.0
+                    tp_price = 0.0
+                    if use_atr_stops and atr > 0:
+                        s_mult, p_mult = self._scale_atr_multipliers(atr, price, atr_stop_mult, atr_profit_mult)
+                        if signal == 1:
+                            stop_price = exec_price - s_mult * atr
+                            tp_price = exec_price + p_mult * atr
+                        else:
+                            stop_price = exec_price + s_mult * atr
+                            tp_price = exec_price - p_mult * atr
+
+                    entry_indicators = {
+                        "entry_zscore": float(row.get("zscore", 0)) if "zscore" in row.index else 0.0,
+                        "entry_rsi": float(row.get("rsi", 0)) if "rsi" in row.index else 0.0,
+                        "entry_bb_pct_b": float(row.get("bb_pct_b", 0)) if "bb_pct_b" in row.index else 0.0,
+                        "entry_volume_zscore": float(row.get("volume_zscore", 0)) if "volume_zscore" in row.index else 0.0,
+                        "entry_atr": atr,
+                        "entry_volatility": float(row.get("volatility", 0)) if "volatility" in row.index else 0.0,
+                        "entry_dist_sma200": float(row.get("dist_sma200", 0)) if "dist_sma200" in row.index else 0.0,
+                        "entry_signal_strength": strength,
+                        "entry_macd_hist": float(row.get("macd_hist", 0)) if "macd_hist" in row.index else 0.0,
+                    }
+
+                    active_positions[sym] = {
+                        "shares": shares if signal == 1 else -shares,
+                        "entry_price": exec_price,
+                        "entry_date": date,
+                        "stop": stop_price,
+                        "tp": tp_price,
+                        "indicators": entry_indicators,
+                    }
+
+            # --- Phase 3: Compute portfolio value ---
+            active_value = 0.0
+            for sym, pos in active_positions.items():
+                if sym in signals_by_symbol and date in signals_by_symbol[sym].index:
+                    sym_price = float(signals_by_symbol[sym].loc[date, "Close"])
+                else:
+                    sym_price = pos["entry_price"]
+                active_value += pos["shares"] * sym_price
+
+            idle_value = bm_shares * bm_price if bm_price > 0 else 0
+            port_val = idle_value + active_value + residual_cash
+            portfolio_values.append({
+                "date": date,
+                "portfolio_value": port_val,
+                "cash": residual_cash,
+                "active_positions": len(active_positions),
+                "bm_shares": bm_shares,
+            })
+
+            if bm_price > 0:
+                prev_bm_price = bm_price
+
+        self._portfolio = pd.DataFrame(portfolio_values).set_index("date")
+        self._current_symbol = "PORTFOLIO"
+
+        # Benchmark = SPY buy-and-hold
+        bh_shares = initial_capital / first_bm_price if first_bm_price > 0 else 0
+        bm_reindexed = benchmark_prices.reindex(self._portfolio.index).ffill()
+        self._benchmark = bm_reindexed * bh_shares
 
         return self._portfolio
