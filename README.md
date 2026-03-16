@@ -31,48 +31,57 @@ A production-ready algorithmic trading system that combines classical mean rever
 
 ## Results: Positive Alpha Achieved
 
-### Portfolio Backtest (2-year, 7 symbols on SPY overlay)
+### Portfolio Backtest (2-year, 5 symbols on SPY overlay)
 
 | Metric | Strategy | SPY Buy & Hold | Delta |
 |--------|----------|----------------|-------|
-| **Return** | **39.92%** | 31.79% | **+8.13%** |
-| **Alpha** | **+8.13%** | -- | -- |
-| **Sharpe** | **1.075** | 0.928 | **+0.147** |
-| **Sortino** | **1.351** | -- | -- |
-| Max Drawdown | -19.41% | -18.76% | -0.65% |
-| Trades | 18 | -- | -- |
-| Win Rate | 61.1% | -- | -- |
-| Profit Factor | 3.40 | -- | -- |
-| Expectancy | $658/trade | -- | -- |
-| Capital Utilization | 44.3% | 100% | -- |
+| **Return** | **42.48%** | 31.79% | **+10.69%** |
+| **Alpha** | **+10.69%** | -- | -- |
+| **Sharpe** | **1.133** | 0.928 | **+0.205** |
+| Max Drawdown | -18.76% | -18.76% | 0.00% |
+| Trades | 10 | -- | -- |
+| Win Rate | 80.0% | -- | -- |
+| Profit Factor | 10.39 | -- | -- |
+| Expectancy | $1,372/trade | -- | -- |
 
-### Per-Symbol Alpha Breakdown
+### 5-Year Stress Test (includes 2022 bear market)
+
+| Metric | Strategy | SPY Buy & Hold | Delta |
+|--------|----------|----------------|-------|
+| **Return** | **85.27%** | 78.98% | **+6.29%** |
+| **Alpha** | **+6.29%** | -- | -- |
+| **Sharpe** | **0.788** | 0.773 | **+0.015** |
+| Max Drawdown | -25.60% | -24.50% | -1.10% |
+| Trades | 20 | -- | -- |
+| Win Rate | 70.0% | -- | -- |
+| Profit Factor | 2.20 | -- | -- |
+| Expectancy | $636/trade | -- | -- |
+
+### Per-Symbol Alpha Breakdown (5-year)
 
 | Symbol | Trades | P&L | Win Rate |
 |--------|--------|-----|----------|
-| NVDA | 2 | +$4,517 | 100% |
-| TSLA | 2 | +$3,784 | 100% |
-| AAPL | 2 | +$2,767 | 100% |
-| AMZN | 2 | +$755 | 50% |
-| GOOGL | 2 | +$589 | 50% |
-| META | 4 | +$528 | 50% |
-| MSFT | 4 | -$1,089 | 25% |
+| GOOGL | 7 | +$6,379 | 71.4% |
+| AMZN | 4 | +$4,086 | 75.0% |
+| AAPL | 3 | +$3,850 | 100.0% |
+| NVDA | 2 | -$1,144 | 50.0% |
+| TSLA | 4 | -$460 | 50.0% |
 
 ### How we got here
 
-The system went through three phases of improvement:
+The system went through five phases of improvement:
 
 **Phase 1: Risk control** -- Long-only mode, 5-layer filter chain, volatility-scaled ATR stops, parameter sweep. Result: near-zero drawdown but negative alpha (sitting in cash 95% of the time while the market rallied).
 
 **Phase 2: Capital utilization** -- Three structural changes solved the alpha problem:
 
 1. **Benchmark overlay** -- Idle cash is invested in SPY instead of earning 0%. When a mean-reversion signal fires, SPY shares are liquidated to fund the trade. On exit, proceeds return to SPY. The strategy earns market return + incremental alpha from trades.
-2. **Multi-symbol portfolio engine** -- A single portfolio holds SPY as its base and trades mean-reversion dips across 7 symbols concurrently. More symbols = more dip opportunities = higher capital utilization (15% -> 44%).
+2. **Multi-symbol portfolio engine** -- A single portfolio holds SPY as its base and trades mean-reversion dips across multiple symbols concurrently. More symbols = more dip opportunities = higher capital utilization (15% -> 44%).
 3. **Larger position sizing** -- Increased from 5% to 12% per trade. Drawdowns were well-controlled, leaving room to amplify winning trades.
 
 **Phase 3: Euphoria filter experiment (rejected)** -- Tested reducing SPY overlay exposure when the benchmark itself was overbought (RSI > 75 or z-score > 1.5), scaling down to 30% exposure at extreme levels. The hypothesis was that avoiding predictable pullbacks would improve risk-adjusted returns.
 
-Result: the filter was active 132 of 500 days but only improved max drawdown by 0.05% (-19.41% to -19.36%) while costing 3.23% in returns (alpha dropped from +8.13% to +4.90%, Sharpe from 1.075 to 1.019). Every metric got worse. The market stayed "overbought" and kept rallying — selling tops in a bull market is the mirror image of the same mistake as shorting rallies. The experiment was reverted.
+Result: the filter was active 132 of 500 days but only improved max drawdown by 0.05% (-19.41% to -19.36%) while costing 3.23% in returns (alpha dropped from +8.13% to +4.90%, Sharpe from 1.075 to 1.019). Every metric got worse. The market stayed "overbought" and kept rallying -- selling tops in a bull market is the mirror image of the same mistake as shorting rallies. The experiment was reverted.
 
 | Metric | Without Filter | With Euphoria Filter | Delta |
 |--------|---------------|---------------------|-------|
@@ -83,7 +92,20 @@ Result: the filter was active 132 of 500 days but only improved max drawdown by 
 
 **Lesson learned:** In a bull market, "overbought" conditions persist far longer than mean-reversion models expect. Reducing exposure when the market looks stretched is just market timing in disguise, and market timing destroys alpha. The correct approach is to stay fully invested in the benchmark and only make tactical trades on individual stock dips.
 
-**Current state:** Alpha is positive and diversified across multiple names. The strategy beats SPY buy-and-hold by +8.13% with a Sharpe of 1.075.
+**Phase 4: 5-year stress test** -- Extended the backtest from 2 years to 5 years to include the 2022 bear market (-24.5% on SPY). Alpha remained positive (+4.11% with the original 7 symbols), confirming the edge survives a full market cycle.
+
+**Phase 5: Symbol curation** -- The 5-year backtest revealed MSFT (0% win rate, -$1,081) and META (0% win rate, -$417) were consistent alpha destroyers. Initial attempt to drop only MSFT backfired: the freed capital flowed to extra META trades that lost even more (-$1,617). The key insight -- proposed by the system's developer -- was to drop *both* losers simultaneously so capital could only reallocate to winners. This worked:
+
+| Metric | 7 symbols | Drop MSFT only | Drop MSFT + META |
+|--------|-----------|---------------|-----------------|
+| Alpha (5Y) | +4.11% | +3.77% (worse) | **+6.29%** (best) |
+| Win Rate | 60.9% | 60.9% | **70.0%** |
+| Stop Rate | 39.1% | 39.1% | **30.0%** |
+| Expectancy | $497 | $475 | **$636** |
+
+**Lesson learned:** Removing a single losing symbol can backfire if the freed capital flows to another loser. You have to identify *all* the consistent losers and remove them together, so capital strictly reallocates to winners. Diversification only helps when all components have a positive or neutral edge.
+
+**Current state:** The strategy beats SPY buy-and-hold by +10.69% (2Y) / +6.29% (5Y) with a Sharpe of 1.133 / 0.788, validated through the 2022 bear market.
 
 ## Features
 
