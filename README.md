@@ -70,7 +70,20 @@ The system went through three phases of improvement:
 2. **Multi-symbol portfolio engine** -- A single portfolio holds SPY as its base and trades mean-reversion dips across 7 symbols concurrently. More symbols = more dip opportunities = higher capital utilization (15% -> 44%).
 3. **Larger position sizing** -- Increased from 5% to 12% per trade. Drawdowns were well-controlled, leaving room to amplify winning trades.
 
-**Phase 3 (current):** Alpha is positive and diversified across multiple names. The strategy beats SPY buy-and-hold by +8.13% with a Sharpe of 1.075.
+**Phase 3: Euphoria filter experiment (rejected)** -- Tested reducing SPY overlay exposure when the benchmark itself was overbought (RSI > 75 or z-score > 1.5), scaling down to 30% exposure at extreme levels. The hypothesis was that avoiding predictable pullbacks would improve risk-adjusted returns.
+
+Result: the filter was active 132 of 500 days but only improved max drawdown by 0.05% (-19.41% to -19.36%) while costing 3.23% in returns (alpha dropped from +8.13% to +4.90%, Sharpe from 1.075 to 1.019). Every metric got worse. The market stayed "overbought" and kept rallying — selling tops in a bull market is the mirror image of the same mistake as shorting rallies. The experiment was reverted.
+
+| Metric | Without Filter | With Euphoria Filter | Delta |
+|--------|---------------|---------------------|-------|
+| Return | **39.92%** | 36.69% | -3.23% |
+| Alpha | **+8.13%** | +4.90% | -3.23% |
+| Sharpe | **1.075** | 1.019 | -0.056 |
+| Max Drawdown | -19.41% | -19.36% | +0.05% |
+
+**Lesson learned:** In a bull market, "overbought" conditions persist far longer than mean-reversion models expect. Reducing exposure when the market looks stretched is just market timing in disguise, and market timing destroys alpha. The correct approach is to stay fully invested in the benchmark and only make tactical trades on individual stock dips.
+
+**Current state:** Alpha is positive and diversified across multiple names. The strategy beats SPY buy-and-hold by +8.13% with a Sharpe of 1.075.
 
 ## Features
 
