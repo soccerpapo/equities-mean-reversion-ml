@@ -66,6 +66,7 @@ def _prepare_signals(
     use_ml: bool = True,
     use_regime: bool = False,
     vix_data: pd.Series = None,
+    profile=None,
 ):
     """Fetch data and return (signals_df, regime_series).
 
@@ -78,6 +79,7 @@ def _prepare_signals(
         use_ml: Whether to apply the ML signal filter
         use_regime: Whether to compute and return regime labels
         vix_data: Optional VIX close prices for macro filtering
+        profile: Optional StockProfile with per-stock parameter overrides
 
     Returns:
         Tuple (signals_df, regime_series) where regime_series may be None
@@ -92,7 +94,7 @@ def _prepare_signals(
         return None, None
 
     df = ind_engine.compute_all(df, vix_data=vix_data)
-    df = sig_gen.generate_mean_reversion_signals(df)
+    df = sig_gen.generate_mean_reversion_signals(df, profile=profile)
 
     if use_ml:
         ml_filter = MLSignalFilter()
@@ -1025,13 +1027,24 @@ def run_portfolio(symbols: list, years: int = 2) -> None:
         logger.error("No non-benchmark symbols provided. Add symbols besides SPY.")
         return
 
+    # Calibrate per-stock profiles if enabled
+    profiles = {}
+    use_profiles = getattr(settings, "USE_STOCK_PROFILES", False)
+    if use_profiles:
+        from analysis.stock_profiles import calibrate_all, print_profiles
+        logger.info("Calibrating per-stock adaptive profiles...")
+        profiles = calibrate_all(trade_symbols, period=period)
+        print_profiles(profiles)
+
     # Prepare signals for each symbol
     signals_by_symbol = {}
     for symbol in trade_symbols:
+        profile = profiles.get(symbol)
         df, _ = _prepare_signals(
             symbol, period, fetcher, ind_engine, sig_gen,
             use_ml=True, use_regime=False,
             vix_data=vix_data,
+            profile=profile,
         )
         if df is not None and "signal" in df.columns:
             signals_by_symbol[symbol] = df
@@ -1051,6 +1064,7 @@ def run_portfolio(symbols: list, years: int = 2) -> None:
         atr_stop_mult=getattr(settings, "ATR_STOP_MULTIPLIER", 2.0),
         atr_profit_mult=getattr(settings, "ATR_PROFIT_MULTIPLIER", 2.5),
         max_concurrent_positions=len(trade_symbols),
+        profiles=profiles if use_profiles else None,
     )
 
     report = bt.get_performance_report()
@@ -1146,7 +1160,7 @@ def main():
     parser = argparse.ArgumentParser(description="Equities Mean Reversion ML Trading System")
     parser.add_argument(
         "--mode",
-        choices=["backtest", "portfolio", "train", "trade", "compare", "analyze", "experiments", "sweep"],
+        choices=["backtest", "portfolio", "train", "trade", "compare", "analyze", "experiments", "sweep", "screen"],
         default="backtest",
         help="Operation mode",
     )
@@ -1216,6 +1230,19 @@ def main():
         symbols = args.symbols or ["SPY", "NVDA"]
         years = args.years or 2
         run_sweep(symbols, years=years)
+    elif args.mode == "screen":
+        from analysis.symbol_screener import (
+            screen_symbols, print_screen_report, DEFAULT_CANDIDATES,
+        )
+        candidates = args.symbols or DEFAULT_CANDIDATES
+        years = args.years or 5
+        period = f"{years}y"
+        print(f"\nScreening {len(candidates)} candidates over {years} years...")
+        df_screen = screen_symbols(candidates, period=period)
+        print_screen_report(df_screen)
+        csv_path = "screen_results.csv"
+        df_screen.to_csv(csv_path, index=False)
+        print(f"\n  Full results saved to {csv_path}")
     elif args.mode == "experiments":
         run_show_experiments()
     elif args.mode == "compare":

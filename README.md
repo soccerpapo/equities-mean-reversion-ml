@@ -105,7 +105,23 @@ Result: the filter was active 132 of 500 days but only improved max drawdown by 
 
 **Lesson learned:** Removing a single losing symbol can backfire if the freed capital flows to another loser. You have to identify *all* the consistent losers and remove them together, so capital strictly reallocates to winners. Diversification only helps when all components have a positive or neutral edge.
 
-**Current state:** The strategy beats SPY buy-and-hold by +10.69% (2Y) / +6.29% (5Y) with a Sharpe of 1.133 / 0.788, validated through the 2022 bear market.
+**Phase 6: Quantitative symbol screener & expansion attempt** -- Built a symbol screener that ranks candidates by 8 mean-reversion metrics: Hurst exponent (< 0.5 = mean-reverting), lag-1 return autocorrelation (negative = dips bounce), variance ratio (< 1.0), dip recovery rate, liquidity, annualized volatility, SPY correlation, and beta. A weighted composite score (0-100) ranks suitability for the dip-buying strategy.
+
+Screened 35 large-cap names across tech, financials, healthcare, consumer, energy, and industrials. Top scorers: V (82.0), MSFT (73.3), AVGO (73.0), MA (71.3), META (65.7), CRM (65.1), JPM (64.7).
+
+Tested adding the top non-tech names (V, MA, JPM, CRM) to diversify across sectors:
+
+| Config | Alpha (2Y) | Alpha (5Y) | Win Rate (5Y) | Trades (5Y) |
+|--------|-----------|-----------|---------------|-------------|
+| **5 symbols (original)** | **+10.69%** | **+6.29%** | **70.0%** | 20 |
+| + V, JPM | +10.03% | -0.19% | 60.0% | 30 |
+| + V, MA, JPM, CRM | +10.03% | -3.29% | 52.6% | 38 |
+
+Every expansion degraded 5-year alpha. The new symbols had good screening metrics but generated near-zero or negative alpha in practice — and diverted capital from proven winners (GOOGL, AMZN, AAPL).
+
+**Lesson learned:** Good screening metrics (Hurst, autocorrelation, dip recovery) are necessary but not sufficient. The strategy's alpha comes from a specific combination of filters + ATR stops + position sizing that works on a narrow set of names. This is a **concentrated alpha strategy**, not a diversified one — the edge is narrow and deep, not wide and shallow. The screener is useful for eliminating bad candidates, but the backtest remains the final arbiter.
+
+**Current state:** The strategy beats SPY buy-and-hold by +10.69% (2Y) / +6.29% (5Y) with a Sharpe of 1.133 / 0.788, validated through the 2022 bear market. The original 5-symbol set (AAPL, GOOGL, AMZN, NVDA, TSLA) remains optimal.
 
 ## Features
 
@@ -131,6 +147,13 @@ Result: the filter was active 132 of 500 days but only improved max drawdown by 
 - **Multi-Symbol Concurrent Positions**: Trade mean-reversion dips across many symbols simultaneously
 - **Capital Utilization Tracking**: Reports avg concurrent positions and % of days with active trades
 - **Per-Symbol P&L Breakdown**: See which symbols contribute alpha and which are a drag
+
+### Symbol Screener
+- **Quantitative screening** across 8 metrics: Hurst exponent, return autocorrelation, variance ratio (5d/10d), dip recovery rate, liquidity, annualized volatility, SPY correlation, beta
+- **Composite scoring** (0-100) with configurable weights targeting the ideal mean-reversion profile
+- **35 default candidates** across tech, financials, healthcare, consumer, energy, industrials
+- **Detailed report** with per-metric flags, strengths/weaknesses, and sector diversification guidance
+- Run with `--mode screen` or pass custom candidates via `--symbols`
 
 ### Trade Analysis & Alpha Discovery
 - **Trade Log Export**: CSV with all indicators at entry (z-score, RSI, BB %B, volume, ATR, volatility, distance from SMA, MACD histogram, signal strength)
@@ -221,6 +244,18 @@ Systematically tests all combinations of z-score thresholds and signal strengths
 
 ```bash
 python main.py --mode sweep --symbols SPY NVDA --years 2
+```
+
+### Screen candidate symbols
+
+Rank potential additions by mean-reversion suitability (Hurst, autocorrelation, dip recovery, etc.):
+
+```bash
+# Screen 35 default large-cap candidates
+python main.py --mode screen
+
+# Screen specific symbols
+python main.py --mode screen --symbols AMD NFLX CRM AVGO V JPM
 ```
 
 ### Compare all strategies
@@ -334,7 +369,7 @@ The recommended workflow for finding repeatable alpha:
 
 ```
 equities-mean-reversion-ml/
-├── main.py                  # CLI (portfolio, backtest, analyze, compare, sweep, train, trade, experiments)
+├── main.py                  # CLI (portfolio, backtest, analyze, compare, sweep, screen, train, trade, experiments)
 ├── config/
 │   └── settings.py          # All tunable parameters (overlay, filters, sizing, stops)
 ├── data/
@@ -352,7 +387,8 @@ equities-mean-reversion-ml/
 │   └── engine.py            # Event-driven backtester with portfolio engine and benchmark overlay
 ├── analysis/
 │   ├── __init__.py
-│   └── experiment_tracker.py # CSV-based parameter experiment logging
+│   ├── experiment_tracker.py # CSV-based parameter experiment logging
+│   └── symbol_screener.py   # Quantitative mean-reversion suitability screener
 ├── risk/
 │   └── manager.py           # Position sizing, stops, drawdown controls
 ├── execution/

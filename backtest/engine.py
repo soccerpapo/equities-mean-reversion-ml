@@ -61,7 +61,9 @@ class BacktestEngine:
 
         return base_stop_mult * scale, base_profit_mult * scale
 
-    def _calculate_position_size(self, atr: float, price: float) -> float:
+    def _calculate_position_size(
+        self, atr: float, price: float, max_size_override: float = None,
+    ) -> float:
         """Calculate position size as a fraction of cash based on ATR volatility.
 
         Uses volatility-inverse sizing: lower volatility → larger position (up to
@@ -71,13 +73,14 @@ class BacktestEngine:
         Args:
             atr: Average True Range value for the current bar.
             price: Current asset price.
+            max_size_override: Optional per-stock max position size (from StockProfile).
 
         Returns:
             Position size as a fraction of available cash (between 0.15 and MAX_POSITION_SIZE_PCT).
         """
         from config import settings
 
-        max_size = getattr(settings, "MAX_POSITION_SIZE_PCT", 0.25)
+        max_size = max_size_override if max_size_override is not None else getattr(settings, "MAX_POSITION_SIZE_PCT", 0.25)
         min_size = 0.15
 
         if atr <= 0 or price <= 0:
@@ -1549,6 +1552,7 @@ class BacktestEngine:
         atr_stop_mult: float = 2.0,
         atr_profit_mult: float = 3.0,
         max_concurrent_positions: int = 5,
+        profiles: Optional[Dict] = None,
     ) -> pd.DataFrame:
         """Multi-symbol portfolio backtest with benchmark overlay.
 
@@ -1556,6 +1560,9 @@ class BacktestEngine:
         a mean-reversion signal, liquidates a slice of the benchmark position
         to fund the trade.  On exit, proceeds return to the benchmark pool.
         Supports multiple concurrent positions across different symbols.
+
+        When profiles is provided, per-stock ATR multipliers and position
+        sizing are used instead of the global defaults.
 
         Args:
             signals_by_symbol: Dict mapping symbol -> DataFrame with signal
@@ -1566,6 +1573,7 @@ class BacktestEngine:
             atr_stop_mult: Base ATR stop multiplier
             atr_profit_mult: Base ATR profit multiplier
             max_concurrent_positions: Max simultaneous active trades
+            profiles: Optional dict of {symbol: StockProfile} for per-stock parameters
 
         Returns:
             DataFrame with portfolio equity curve
@@ -1671,7 +1679,18 @@ class BacktestEngine:
 
                 exec_price = price * (1 + self.SLIPPAGE) if signal == 1 else price * (1 - self.SLIPPAGE)
 
-                position_size_pct = self._calculate_position_size(atr, price)
+                # Use per-stock profile if available
+                sym_profile = profiles.get(sym) if profiles else None
+                if sym_profile:
+                    position_size_pct = self._calculate_position_size(
+                        atr, price, max_size_override=sym_profile.max_position_size_pct)
+                    sym_stop_mult = sym_profile.atr_stop_mult
+                    sym_profit_mult = sym_profile.atr_profit_mult
+                else:
+                    position_size_pct = self._calculate_position_size(atr, price)
+                    sym_stop_mult = atr_stop_mult
+                    sym_profit_mult = atr_profit_mult
+
                 available = bm_shares * bm_price if bm_price > 0 else 0
                 max_invest = available * position_size_pct * strength
                 shares = int(max_invest / exec_price)
@@ -1681,11 +1700,11 @@ class BacktestEngine:
                     if bm_price > 0:
                         bm_shares -= cost / bm_price
 
-                    s_mult, p_mult = atr_stop_mult, atr_profit_mult
+                    s_mult, p_mult = sym_stop_mult, sym_profit_mult
                     stop_price = 0.0
                     tp_price = 0.0
                     if use_atr_stops and atr > 0:
-                        s_mult, p_mult = self._scale_atr_multipliers(atr, price, atr_stop_mult, atr_profit_mult)
+                        s_mult, p_mult = self._scale_atr_multipliers(atr, price, sym_stop_mult, sym_profit_mult)
                         if signal == 1:
                             stop_price = exec_price - s_mult * atr
                             tp_price = exec_price + p_mult * atr

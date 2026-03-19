@@ -67,6 +67,14 @@ VIX_THRESHOLD_HIGH = 30
 # Min confirmations required beyond z-score (1 = looser, 2 = tighter)
 MIN_OPTIONAL_CONFIRMATIONS = 1
 
+# Per-stock adaptive profiles: auto-calibrate parameters from historical data
+USE_STOCK_PROFILES = True
+
+# Manual per-stock overrides (applied on top of auto-calibration).
+# Keys are symbols; values are dicts of parameter overrides.
+# Example: {"NVDA": {"atr_stop_mult": 2.2, "max_position_size_pct": 0.08}}
+STOCK_PROFILE_OVERRIDES: dict = {}
+
 # Regime detection
 REGIME_N_COMPONENTS = 3  # Number of regimes to detect
 

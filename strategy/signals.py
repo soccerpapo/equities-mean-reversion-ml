@@ -81,7 +81,9 @@ class SignalGenerator:
     # Signal generation
     # ------------------------------------------------------------------
 
-    def generate_mean_reversion_signals(self, df: pd.DataFrame) -> pd.DataFrame:
+    def generate_mean_reversion_signals(
+        self, df: pd.DataFrame, profile=None,
+    ) -> pd.DataFrame:
         """Generate BUY/SELL/HOLD signals based on multiple indicator confirmation.
 
         Signal logic:
@@ -95,6 +97,7 @@ class SignalGenerator:
 
         Args:
             df: DataFrame with computed indicators (or raw OHLCV)
+            profile: Optional StockProfile with per-stock parameter overrides
 
         Returns:
             DataFrame with 'signal' (1=BUY, -1=SELL, 0=HOLD) and 'signal_strength' columns
@@ -107,7 +110,7 @@ class SignalGenerator:
         signals = pd.Series(0, index=result.index)
         signal_strength = pd.Series(0.0, index=result.index)
 
-        entry_thresh = settings.Z_SCORE_ENTRY_THRESHOLD
+        entry_thresh = profile.z_score_entry_threshold if profile else settings.Z_SCORE_ENTRY_THRESHOLD
         rsi_oversold = settings.RSI_OVERSOLD
         rsi_overbought = settings.RSI_OVERBOUGHT
 
@@ -234,7 +237,7 @@ class SignalGenerator:
                 logger.info(f"Distance-from-SMA filter suppressed {filtered_dist} signals")
 
         # --- FILTER LAYER 4: Minimum signal strength ---
-        min_strength = getattr(settings, "MIN_SIGNAL_STRENGTH", 0.0)
+        min_strength = profile.min_signal_strength if profile else getattr(settings, "MIN_SIGNAL_STRENGTH", 0.0)
         if min_strength > 0:
             weak = (signals != 0) & (signal_strength < min_strength)
             signals[weak] = 0
