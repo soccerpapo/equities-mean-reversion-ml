@@ -7,6 +7,23 @@ import yfinance as yf
 logger = logging.getLogger(__name__)
 
 
+def _period_to_start_date(period: str, end_date: str) -> str:
+    """Convert a relative period string + absolute end date to an absolute start date.
+
+    Supports yfinance-style period strings: '1y', '2y', '5y', '6mo', '30d', etc.
+    """
+    end_dt = pd.Timestamp(end_date)
+    if period.endswith("y"):
+        start_dt = end_dt - pd.DateOffset(years=int(period[:-1]))
+    elif period.endswith("mo"):
+        start_dt = end_dt - pd.DateOffset(months=int(period[:-2]))
+    elif period.endswith("d"):
+        start_dt = end_dt - pd.DateOffset(days=int(period[:-1]))
+    else:
+        raise ValueError(f"Cannot parse period '{period}' with pinned end_date")
+    return start_dt.strftime("%Y-%m-%d")
+
+
 class DataFetcher:
     """Fetches market data from yfinance and Alpaca."""
 
@@ -36,10 +53,19 @@ class DataFetcher:
         Returns:
             DataFrame with standardized column names
         """
+        from config import settings
+        pinned_end = getattr(settings, "BACKTEST_END_DATE", "")
+
         for attempt in range(3):
             try:
                 ticker = yf.Ticker(symbol)
-                df = ticker.history(period=period, interval=interval)
+                if pinned_end:
+                    start_date = _period_to_start_date(period, pinned_end)
+                    # end is exclusive in yfinance, add 1 day so the pinned date is included
+                    end_dt = pd.Timestamp(pinned_end) + pd.DateOffset(days=1)
+                    df = ticker.history(start=start_date, end=end_dt.strftime("%Y-%m-%d"), interval=interval)
+                else:
+                    df = ticker.history(period=period, interval=interval)
                 if df.empty:
                     logger.warning(f"No data returned for {symbol}")
                     return pd.DataFrame()

@@ -31,52 +31,52 @@ A production-ready algorithmic trading system that combines classical mean rever
 
 ## Results: Positive Alpha Achieved
 
-### Portfolio Backtest (2-year, 5 symbols on SPY overlay, adaptive profiles)
+### Portfolio Backtest (2-year, adaptive profiles, `--end-date 2026-03-19`)
 
 | Metric | Strategy | SPY Buy & Hold | Delta |
 |--------|----------|----------------|-------|
-| **Return** | **38.93%** | 29.50% | **+9.43%** |
+| **Return** | **43.67%** | 30.70% | **+12.97%** |
+| **Alpha** | **+12.97%** | -- | -- |
+| **Sharpe** | **1.063** | 0.901 | **+0.162** |
+| Max Drawdown | -19.62% | -18.76% | -0.86% |
+| Trades | 9 | -- | -- |
+| Win Rate | 88.9% | -- | -- |
+| Profit Factor | 24.25 | -- | -- |
+| Expectancy | $2,167/trade | -- | -- |
+| Capital Utilization | 51.6% | -- | -- |
+
+### 5-Year Stress Test (includes 2022 bear market, adaptive profiles, `--end-date 2026-03-19`)
+
+| Metric | Strategy | SPY Buy & Hold | Delta |
+|--------|----------|----------------|-------|
+| **Return** | **90.32%** | 80.89% | **+9.43%** |
 | **Alpha** | **+9.43%** | -- | -- |
-| **Sharpe** | **0.980** | 0.874 | **+0.106** |
-| Max Drawdown | -20.23% | -18.76% | -1.47% |
-| Trades | 12 | -- | -- |
-| Win Rate | 66.7% | -- | -- |
-| Profit Factor | 6.37 | -- | -- |
-| Expectancy | $1,295/trade | -- | -- |
-| Capital Utilization | 54.7% | -- | -- |
-
-### 5-Year Stress Test (includes 2022 bear market, adaptive profiles)
-
-| Metric | Strategy | SPY Buy & Hold | Delta |
-|--------|----------|----------------|-------|
-| **Return** | **91.14%** | 79.90% | **+11.24%** |
-| **Alpha** | **+11.24%** | -- | -- |
-| **Sharpe** | **0.798** | 0.780 | **+0.018** |
-| Max Drawdown | -26.95% | -24.50% | -2.45% |
+| **Sharpe** | **0.793** | 0.786 | **+0.007** |
+| Max Drawdown | -26.89% | -24.50% | -2.39% |
 | Trades | 17 | -- | -- |
 | Win Rate | 76.5% | -- | -- |
-| Profit Factor | 3.44 | -- | -- |
-| Expectancy | $1,305/trade | -- | -- |
+| Profit Factor | 3.30 | -- | -- |
+| Expectancy | $1,199/trade | -- | -- |
 
 ### Per-Symbol Alpha Breakdown (5-year, adaptive profiles)
 
 | Symbol | Trades | P&L | Win Rate | ATR Stop | Z-Entry | MaxPos |
 |--------|--------|-----|----------|----------|---------|--------|
-| TSLA | 3 | +$11,405 | 66.7% | 2.40x | 2.03 | 5.9% |
-| GOOGL | 5 | +$5,503 | 80.0% | 1.53x | 1.80 | 11.0% |
-| AMZN | 5 | +$4,891 | 80.0% | 1.76x | 1.79 | 10.2% |
-| AAPL | 2 | +$2,547 | 100.0% | 1.37x | 1.89 | 11.6% |
-| NVDA | 2 | -$2,158 | 50.0% | 2.40x | 1.88 | 7.2% |
+| TSLA | 3 | +$11,441 | 66.7% | 2.40x | 1.92 | 5.3% |
+| GOOGL | 5 | +$5,501 | 80.0% | 1.48x | 1.82 | 11.2% |
+| AMZN | 3 | +$4,640 | 100.0% | 1.58x | 1.71 | 10.8% |
+| AAPL | 4 | +$941 | 75.0% | 1.43x | 1.83 | 11.4% |
+| NVDA | 2 | -$2,131 | 50.0% | 2.40x | 1.79 | 7.6% |
 
-### Impact of Adaptive Profiles (uniform vs per-stock)
+### Impact of Adaptive Profiles (uniform vs per-stock, 5-year)
 
 | Metric | Uniform (5Y) | Adaptive (5Y) | Improvement |
 |--------|-------------|--------------|-------------|
-| **Alpha** | +6.29% | **+11.24%** | **+4.95%** |
-| Win Rate | 70.0% | **76.5%** | +6.5pp |
-| Expectancy | $636 | **$1,305** | **+$669** |
-| TP Hit Rate | 70.0% | **76.5%** | +6.5pp |
-| Stop Hit Rate | 30.0% | **23.5%** | -6.5pp |
+| **Alpha** | +2.26% | **+9.43%** | **+7.17%** |
+| Win Rate | 66.7% | **76.5%** | +9.8pp |
+| Expectancy | $454 | **$1,199** | **+$745** |
+| TP Hit Rate | 66.7% | **76.5%** | +9.8pp |
+| Stop Hit Rate | 33.3% | **23.5%** | -9.8pp |
 
 ### How we got here
 
@@ -137,7 +137,7 @@ Every expansion degraded 5-year alpha. The new symbols had good screening metric
 The developer proposed building per-stock parameter profiles calibrated from each stock's own characteristics, rather than just adding more symbols with one-size-fits-all parameters. This reframed the problem from "which stocks to trade" to "how to trade each stock optimally" — a fundamentally better question.
 
 The resulting auto-calibration system uses continuous interpolation (not discrete tiers) to minimize overfitting:
-- **ATR stops**: scaled by annualized volatility (NVDA gets 2.4x, AAPL gets 1.37x)
+- **ATR stops**: scaled by annualized volatility (NVDA gets 2.4x, AAPL gets 1.43x)
 - **Z-score entry**: adjusted by Hurst exponent (trending stocks need bigger dips to trigger)
 - **Position sizing**: inverse of volatility (risk parity — smaller bets on volatile names)
 - **Min signal strength**: adjusted by dip recovery rate (high recovery = trust signals more)
@@ -146,17 +146,19 @@ This was the single largest alpha improvement in the system's history:
 
 | Metric | Uniform (5Y) | Adaptive (5Y) | Change |
 |--------|-------------|--------------|--------|
-| **Alpha** | +6.29% | **+11.24%** | **+79% relative improvement** |
-| **Expectancy** | $636/trade | **$1,305/trade** | **+105%** |
-| **TSLA P&L** | -$460 | **+$11,405** | **turned a loser into the top performer** |
-| **Stop hit rate** | 30.0% | **23.5%** | fewer premature stop-outs |
-| **TP hit rate** | 70.0% | **76.5%** | more trades reaching target |
+| **Alpha** | +2.26% | **+9.43%** | **+317% relative improvement** |
+| **Expectancy** | $454/trade | **$1,199/trade** | **+164%** |
+| **TSLA P&L** | -$309 | **+$11,441** | **turned a loser into the top performer** |
+| **Stop hit rate** | 33.3% | **23.5%** | fewer premature stop-outs |
+| **TP hit rate** | 66.7% | **76.5%** | more trades reaching target |
 
-TSLA went from the worst performer (-$460) to the best (+$11,405) — a $11,865 swing from a single parameter change. The wider stops (2.4x ATR vs 1.5x) let winning trades breathe through normal TSLA volatility instead of getting stopped out, while the smaller position sizing (5.9% vs 12%) limited damage during the 2022 bear market. The same logic helped every stock: GOOGL's 96% dip recovery earned it a looser signal threshold, capturing more of those reliable bounces; AAPL's low volatility earned it tighter stops and larger positions, amplifying its 100% win rate.
+TSLA went from a net loser (-$309) to the best performer (+$11,441) — an $11,750 swing from per-stock parameter calibration. The wider stops (2.4x ATR vs 1.5x) let winning trades breathe through normal TSLA volatility instead of getting stopped out, while the smaller position sizing (5.3% vs 12%) limited damage during the 2022 bear market. The same logic helped every stock: GOOGL's 93% dip recovery earned it a looser signal threshold, capturing more of those reliable bounces; AAPL's low volatility earned it tighter stops and larger positions.
 
 **Lesson learned:** In a concentrated alpha strategy, optimizing *how* you trade each stock matters more than *which* stocks you trade. A stock that loses money with generic parameters can become your best performer with calibrated ones. The developer's insight — that uniform parameters were the bottleneck, not the symbol universe — was the key breakthrough.
 
-**Current state:** The strategy beats SPY buy-and-hold by +9.43% (2Y) / +11.24% (5Y) with per-stock adaptive parameter profiles, validated through the 2022 bear market.
+**Phase 8: Reproducibility** -- Backtest results were drifting between runs because `period="2y"` is relative to the current date. Each day adds a new bar and drops an old one, shifting the ML training window and changing which signals get filtered. The fix: `--end-date` flag that pins the data window to a specific calendar date, converting relative periods to absolute `start`/`end` dates. All data-fetching paths (benchmark, profiles, signals, VIX) use the same pinned boundary. Results are now bit-for-bit identical across runs with the same `--end-date`. Without it, the current behavior is preserved (window shifts daily).
+
+**Current state:** The strategy beats SPY buy-and-hold by +12.97% (2Y) / +9.43% (5Y) with per-stock adaptive parameter profiles, validated through the 2022 bear market. All results are reproducible via `--end-date 2026-03-19`.
 
 ## Features
 
@@ -200,7 +202,7 @@ TSLA went from the worst performer (-$460) to the best (+$11,405) — a $11,865 
 
 ### Per-Stock Adaptive Profiles
 - **Auto-calibration** from historical data: volatility, Hurst exponent, dip recovery rate, beta
-- **ATR stops** scaled by annualized volatility (1.37x for AAPL, 2.4x for NVDA/TSLA)
+- **ATR stops** scaled by annualized volatility (1.43x for AAPL, 2.4x for NVDA/TSLA)
 - **Z-score entry** adjusted by mean-reversion strength (stricter for trending stocks)
 - **Position sizing** inversely proportional to volatility (risk parity)
 - **Signal thresholds** loosened for high-recovery stocks, tightened for low-recovery
@@ -241,7 +243,11 @@ cp .env.example .env
 The `portfolio` mode runs the full system: SPY overlay + mean-reversion across multiple symbols. This is the mode that produces positive alpha.
 
 ```bash
-python main.py --mode portfolio --symbols SPY NVDA AAPL MSFT GOOGL AMZN META TSLA --years 2
+# Reproducible run (pinned end date — same results every time)
+python main.py --mode portfolio --years 2 --end-date 2026-03-19
+
+# Live window (data shifts daily, results may change)
+python main.py --mode portfolio --symbols SPY NVDA AAPL GOOGL AMZN TSLA --years 2
 ```
 
 Output includes:
@@ -382,12 +388,13 @@ Static allocation: 50% Momentum + 30% Pairs + 20% Cash Reserve.
 | Min optional confirmations | 1 | Beyond z-score (1=looser, 2=tighter) |
 | RSI oversold / overbought | 30 / 70 | |
 | Adaptive profiles | True | Auto-calibrate per-stock parameters |
-| Stop loss (ATR base) | 1.5x ATR | Per-stock: 1.37x (AAPL) to 2.4x (NVDA) |
-| Take profit (ATR base) | 2.5x ATR | Per-stock: 2.29x (AAPL) to 4.0x (NVDA) |
+| Stop loss (ATR base) | 1.5x ATR | Per-stock: 1.43x (AAPL) to 2.4x (NVDA/TSLA) |
+| Take profit (ATR base) | 2.5x ATR | Per-stock: 2.38x (AAPL) to 4.0x (NVDA/TSLA) |
 | Volatility-scaled stops | True | Continuous scale by annualized vol |
 | Stop loss (fixed fallback) | 1.5% | Used when ATR unavailable |
 | Take profit (fixed fallback) | 5.0% | |
-| Max position size | Per-stock adaptive | 5.9% (TSLA) to 11.6% (AAPL) |
+| Max position size | Per-stock adaptive | 5.3% (TSLA) to 11.4% (AAPL) |
+| Backtest end date | None (today) | Pin with `--end-date YYYY-MM-DD` for reproducibility |
 | Max portfolio drawdown | 10% | Circuit breaker |
 | Trend SMA period | 200 days | |
 | Max distance from 200-SMA | 8% | |

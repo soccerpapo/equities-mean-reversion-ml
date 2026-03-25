@@ -1178,6 +1178,12 @@ def main():
         help="Number of years of data to use for training/backtesting",
     )
     parser.add_argument(
+        "--end-date",
+        default=None,
+        help="Pin backtest end date (YYYY-MM-DD) for reproducible results. "
+             "Without this, data window shifts daily.",
+    )
+    parser.add_argument(
         "--no-ml",
         action="store_true",
         default=False,
@@ -1199,6 +1205,10 @@ def main():
         ),
     )
     args = parser.parse_args()
+
+    if args.end_date:
+        settings.BACKTEST_END_DATE = args.end_date
+        logger.info(f"Backtest end date pinned to {args.end_date}")
 
     use_ml = not args.no_ml
 
