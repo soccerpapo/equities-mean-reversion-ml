@@ -36,6 +36,8 @@ class StockProfile:
     ann_vol: float = 0.25
     hurst: float = 0.5
     dip_recovery: float = 0.80
+    bull_dip_recovery: float = 0.80
+    bear_dip_recovery: float = 0.50
     beta: float = 1.0
     # Whether this profile was manually overridden
     is_override: bool = False
@@ -69,7 +71,9 @@ def calibrate_profile(
     Returns:
         Calibrated StockProfile
     """
-    from analysis.symbol_screener import _hurst_exponent, _dip_recovery_rate, _compute_beta
+    from analysis.symbol_screener import (
+        _hurst_exponent, _dip_recovery_rate, _dip_recovery_rate_by_regime, _compute_beta,
+    )
 
     returns = prices.pct_change().dropna()
     if len(returns) < 100:
@@ -79,6 +83,9 @@ def calibrate_profile(
     ann_vol = float(returns.std() * np.sqrt(252))
     hurst = _hurst_exponent(returns)
     recovery_rate, _ = _dip_recovery_rate(prices, zscore_threshold=-base_z_entry)
+    bull_recovery, bear_recovery, n_bull, n_bear = _dip_recovery_rate_by_regime(
+        prices, zscore_threshold=-base_z_entry,
+    )
 
     beta = 1.0
     if spy_returns is not None:
@@ -119,6 +126,8 @@ def calibrate_profile(
         ann_vol=round(ann_vol, 4),
         hurst=round(hurst, 3),
         dip_recovery=round(recovery_rate, 3),
+        bull_dip_recovery=round(bull_recovery, 3),
+        bear_dip_recovery=round(bear_recovery, 3),
         beta=round(beta, 2),
     )
     return profile
@@ -193,12 +202,13 @@ def print_profiles(profiles: Dict[str, StockProfile]) -> None:
         print("No profiles to display.")
         return
 
-    print(f"\n{'='*95}")
+    print(f"\n{'='*115}")
     print("  PER-STOCK ADAPTIVE PROFILES")
-    print(f"{'='*95}")
+    print(f"{'='*115}")
     print(f"  {'Symbol':<8} {'ATR Stop':<10} {'ATR TP':<10} {'Z-Entry':<10} "
-          f"{'MinStr':<10} {'MaxPos%':<10} {'AnnVol':<10} {'Hurst':<8} {'Recov':<8} {'Beta':<6}")
-    print("-" * 95)
+          f"{'MinStr':<10} {'MaxPos%':<10} {'AnnVol':<10} {'Hurst':<8} "
+          f"{'BullRec':<8} {'BearRec':<8} {'Beta':<6}")
+    print("-" * 115)
 
     from config import settings
     base_stop = getattr(settings, "ATR_STOP_MULTIPLIER", 1.5)
@@ -208,8 +218,9 @@ def print_profiles(profiles: Dict[str, StockProfile]) -> None:
     base_pos = getattr(settings, "MAX_POSITION_SIZE_PCT", 0.12)
 
     print(f"  {'GLOBAL':<8} {base_stop:<10.3f} {base_profit:<10.3f} {base_z:<10.3f} "
-          f"{base_str:<10.3f} {base_pos:<10.2%} {'--':<10} {'--':<8} {'--':<8} {'--':<6}")
-    print("-" * 95)
+          f"{base_str:<10.3f} {base_pos:<10.2%} {'--':<10} {'--':<8} "
+          f"{'--':<8} {'--':<8} {'--':<6}")
+    print("-" * 115)
 
     for symbol, p in sorted(profiles.items()):
         override_flag = " *" if p.is_override else ""
@@ -220,7 +231,8 @@ def print_profiles(profiles: Dict[str, StockProfile]) -> None:
         print(f"  {symbol:<8} {p.atr_stop_mult:<10.3f} {p.atr_profit_mult:<10.3f} "
               f"{p.z_score_entry_threshold:<10.3f} {p.min_signal_strength:<10.3f} "
               f"{p.max_position_size_pct:<10.2%} {p.ann_vol:<10.1%} "
-              f"{p.hurst:<8.3f} {p.dip_recovery:<8.0%} {p.beta:<6.2f}{override_flag}")
+              f"{p.hurst:<8.3f} {p.bull_dip_recovery:<8.0%} "
+              f"{p.bear_dip_recovery:<8.0%} {p.beta:<6.2f}{override_flag}")
 
     print(f"\n  * = has manual overrides from STOCK_PROFILE_OVERRIDES")
     print(f"\n  Calibration logic:")

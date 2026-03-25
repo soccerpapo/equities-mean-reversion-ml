@@ -113,6 +113,57 @@ def _dip_recovery_rate(
     return float(recoveries / total_dips), total_dips
 
 
+def _dip_recovery_rate_by_regime(
+    prices: pd.Series,
+    zscore_threshold: float = -1.7,
+    recovery_window: int = 10,
+    zscore_window: int = 20,
+    sma_period: int = 200,
+) -> Tuple[float, float, int, int]:
+    """Compute dip recovery rate separately for bull and bear regimes.
+
+    Bull: price >= SMA(200) at the time of dip.
+    Bear: price < SMA(200) at the time of dip.
+
+    Returns:
+        (bull_recovery_rate, bear_recovery_rate, n_bull_dips, n_bear_dips)
+    """
+    sma = prices.rolling(window=sma_period).mean()
+    rolling_mean = prices.rolling(window=zscore_window).mean()
+    rolling_std = prices.rolling(window=zscore_window).std().replace(0, np.nan)
+    zscore = (prices - rolling_mean) / rolling_std
+
+    dip_mask = zscore < zscore_threshold
+    dip_indices = prices.index[dip_mask]
+
+    bull_recoveries, bull_total = 0, 0
+    bear_recoveries, bear_total = 0, 0
+
+    for idx in dip_indices:
+        loc = prices.index.get_loc(idx)
+        if loc + recovery_window >= len(prices):
+            continue
+        if pd.isna(sma.iloc[loc]):
+            continue
+
+        entry_price = prices.iloc[loc]
+        future_max = prices.iloc[loc + 1 : loc + recovery_window + 1].max()
+        recovered = future_max > entry_price
+
+        if prices.iloc[loc] >= sma.iloc[loc]:
+            bull_total += 1
+            if recovered:
+                bull_recoveries += 1
+        else:
+            bear_total += 1
+            if recovered:
+                bear_recoveries += 1
+
+    bull_rate = float(bull_recoveries / bull_total) if bull_total > 0 else 0.0
+    bear_rate = float(bear_recoveries / bear_total) if bear_total > 0 else 0.0
+    return bull_rate, bear_rate, bull_total, bear_total
+
+
 def _compute_beta(returns: pd.Series, benchmark_returns: pd.Series) -> float:
     """Compute beta relative to benchmark."""
     aligned = pd.concat([returns, benchmark_returns], axis=1).dropna()

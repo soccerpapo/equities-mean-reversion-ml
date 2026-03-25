@@ -1686,6 +1686,17 @@ class BacktestEngine:
                         atr, price, max_size_override=sym_profile.max_position_size_pct)
                     sym_stop_mult = sym_profile.atr_stop_mult
                     sym_profit_mult = sym_profile.atr_profit_mult
+
+                    # Bear-recovery scaling: reduce position when trend is uncertain
+                    # (near 200-SMA) and the stock historically doesn't recover dips
+                    # in bear markets.  Far above SMA = full size; at SMA = scale
+                    # to bear_dip_recovery of normal.
+                    dist_sma = float(row.get("dist_sma200", 1.0)) if "dist_sma200" in row.index else 1.0
+                    bear_rec = getattr(sym_profile, "bear_dip_recovery", 1.0)
+                    trend_margin = 0.05
+                    if 0 <= dist_sma < trend_margin and bear_rec < 1.0:
+                        blend = dist_sma / trend_margin
+                        position_size_pct *= blend + (1 - blend) * bear_rec
                 else:
                     position_size_pct = self._calculate_position_size(atr, price)
                     sym_stop_mult = atr_stop_mult
