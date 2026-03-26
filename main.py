@@ -961,9 +961,9 @@ def run_sweep(symbols: list, years: int = 2) -> None:
             print(f"  avg_return={avg_ret:.4f}, avg_sharpe={avg_sharpe:.4f}, "
                   f"trades={combo_trades}, avg_alpha={avg_alpha:.4f}")
 
-    # Restore original settings
-    settings.Z_SCORE_ENTRY_THRESHOLD = 1.7
-    settings.MIN_SIGNAL_STRENGTH = 0.28
+    # Restore domain defaults
+    settings.Z_SCORE_ENTRY_THRESHOLD = 2.0
+    settings.MIN_SIGNAL_STRENGTH = 0.0
 
     # Print ranked results
     results.sort(key=lambda x: x["avg_sharpe"], reverse=True)

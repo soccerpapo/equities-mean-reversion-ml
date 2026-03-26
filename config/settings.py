@@ -7,18 +7,18 @@ ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
 ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
 
-SYMBOLS = ["SPY", "AAPL", "GOOGL", "AMZN", "NVDA", "TSLA"]
-TRAINING_SYMBOLS = ["SPY", "AAPL", "GOOGL", "AMZN", "NVDA", "TSLA"]
+SYMBOLS = ["SPY", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META"]
+TRAINING_SYMBOLS = ["SPY", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META"]
 LOOKBACK_PERIOD = 252
-Z_SCORE_ENTRY_THRESHOLD = 1.7
+Z_SCORE_ENTRY_THRESHOLD = 2.0
 Z_SCORE_EXIT_THRESHOLD = 0.3
 RSI_OVERSOLD = 30
 RSI_OVERBOUGHT = 70
 BOLLINGER_WINDOW = 20
 BOLLINGER_STD = 2.0
-MAX_POSITION_SIZE_PCT = 0.12
-STOP_LOSS_PCT = 0.015
-TAKE_PROFIT_PCT = 0.05
+MAX_POSITION_SIZE_PCT = 0.10
+STOP_LOSS_PCT = 0.02
+TAKE_PROFIT_PCT = 0.06
 MAX_PORTFOLIO_DRAWDOWN_PCT = 0.1
 ML_CONFIDENCE_THRESHOLD = 0.45
 ML_LOOKBACK_YEARS = 5
@@ -40,8 +40,8 @@ USE_REGIME_DETECTION = False
 
 # ATR-based stops (base multipliers — scaled by per-asset volatility when
 # USE_VOLATILITY_SCALED_STOPS is True)
-ATR_STOP_MULTIPLIER = 1.5
-ATR_PROFIT_MULTIPLIER = 2.5
+ATR_STOP_MULTIPLIER = 2.0
+ATR_PROFIT_MULTIPLIER = 3.0
 USE_VOLATILITY_SCALED_STOPS = True
 
 # Volatility regime filter
@@ -54,11 +54,11 @@ USE_TREND_FILTER = True
 TREND_SMA_PERIOD = 200
 
 # Signal strength minimum
-MIN_SIGNAL_STRENGTH = 0.28
+MIN_SIGNAL_STRENGTH = 0.0
 
 # Distance from fair value filter (max % distance from 200-SMA to allow entry)
 USE_DIST_SMA200_FILTER = True
-MAX_DIST_SMA200 = 0.08
+MAX_DIST_SMA200 = 0.10
 
 # VIX macro filter
 USE_VIX_FILTER = False
@@ -73,7 +73,7 @@ MIN_OPTIONAL_CONFIRMATIONS = 1
 BACKTEST_END_DATE = ""
 
 # Per-stock adaptive profiles: auto-calibrate parameters from historical data
-USE_STOCK_PROFILES = True
+USE_STOCK_PROFILES = False
 
 # Manual per-stock overrides (applied on top of auto-calibration).
 # Keys are symbols; values are dicts of parameter overrides.
