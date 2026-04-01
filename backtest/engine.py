@@ -1682,10 +1682,18 @@ class BacktestEngine:
                 # Use per-stock profile if available
                 sym_profile = profiles.get(sym) if profiles else None
                 if sym_profile:
+                    max_pos_val = sym_profile.max_position_size_pct
+                    if isinstance(max_pos_val, pd.Series): max_pos_val = max_pos_val.get(date, max_pos_val.iloc[-1])
                     position_size_pct = self._calculate_position_size(
-                        atr, price, max_size_override=sym_profile.max_position_size_pct)
-                    sym_stop_mult = sym_profile.atr_stop_mult
-                    sym_profit_mult = sym_profile.atr_profit_mult
+                        atr, price, max_size_override=max_pos_val)
+                    
+                    stop_val = sym_profile.atr_stop_mult
+                    if isinstance(stop_val, pd.Series): stop_val = stop_val.get(date, stop_val.iloc[-1])
+                    sym_stop_mult = stop_val
+                    
+                    profit_val = sym_profile.atr_profit_mult
+                    if isinstance(profit_val, pd.Series): profit_val = profit_val.get(date, profit_val.iloc[-1])
+                    sym_profit_mult = profit_val
                 else:
                     position_size_pct = self._calculate_position_size(atr, price)
                     sym_stop_mult = atr_stop_mult

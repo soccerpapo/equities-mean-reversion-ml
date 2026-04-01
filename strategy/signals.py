@@ -111,6 +111,9 @@ class SignalGenerator:
         signal_strength = pd.Series(0.0, index=result.index)
 
         entry_thresh = profile.z_score_entry_threshold if profile else settings.Z_SCORE_ENTRY_THRESHOLD
+        if isinstance(entry_thresh, pd.Series):
+            entry_thresh = entry_thresh.reindex(result.index).ffill()
+
         rsi_oversold = settings.RSI_OVERSOLD
         rsi_overbought = settings.RSI_OVERBOUGHT
 
@@ -238,10 +241,16 @@ class SignalGenerator:
 
         # --- FILTER LAYER 4: Minimum signal strength ---
         min_strength = profile.min_signal_strength if profile else getattr(settings, "MIN_SIGNAL_STRENGTH", 0.0)
-        if min_strength > 0:
+        if isinstance(min_strength, pd.Series):
+            min_strength = min_strength.reindex(result.index).ffill()
             weak = (signals != 0) & (signal_strength < min_strength)
             signals[weak] = 0
             signal_strength[weak] = 0.0
+        else:
+            if min_strength > 0:
+                weak = (signals != 0) & (signal_strength < min_strength)
+                signals[weak] = 0
+                signal_strength[weak] = 0.0
 
         result["signal"] = signals
         result["signal_strength"] = signal_strength

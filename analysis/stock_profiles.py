@@ -50,76 +50,88 @@ def calibrate_profile(
     base_z_entry: float = 1.7,
     base_min_strength: float = 0.28,
     base_max_pos: float = 0.12,
+    update_freq: int = 21,
 ) -> StockProfile:
-    """Calibrate a parameter profile from historical price data.
-
-    Uses the same metrics as the screener but maps them directly to
-    strategy parameters via continuous interpolation (not discrete tiers).
-
-    Args:
-        symbol: Ticker symbol
-        prices: Close price Series (at least 252 bars)
-        spy_returns: Optional SPY daily returns for beta calculation
-        base_atr_stop: Global baseline ATR stop multiplier
-        base_atr_profit: Global baseline ATR profit multiplier
-        base_z_entry: Global baseline z-score entry threshold
-        base_min_strength: Global baseline min signal strength
-        base_max_pos: Global baseline max position size
-
-    Returns:
-        Calibrated StockProfile
+    """Calibrate a parameter profile from historical price data using an expanding window.
+    To avoid look-ahead bias, it calibrates on data up to T-1 and applies to T.
     """
     from analysis.symbol_screener import _hurst_exponent, _dip_recovery_rate, _compute_beta
 
     returns = prices.pct_change().dropna()
-    if len(returns) < 100:
+    dates = returns.index
+    n = len(dates)
+
+    if n < 100:
         logger.warning(f"{symbol}: insufficient data for calibration, using defaults")
         return StockProfile(symbol=symbol)
 
-    ann_vol = float(returns.std() * np.sqrt(252))
-    hurst = _hurst_exponent(returns)
-    recovery_rate, _ = _dip_recovery_rate(prices, zscore_threshold=-base_z_entry)
+    daily_params = {
+        "atr_stop_mult": np.full(n, base_atr_stop),
+        "atr_profit_mult": np.full(n, base_atr_profit),
+        "z_score_entry_threshold": np.full(n, base_z_entry),
+        "min_signal_strength": np.full(n, base_min_strength),
+        "max_position_size_pct": np.full(n, base_max_pos),
+        "ann_vol": np.full(n, np.nan),
+        "hurst": np.full(n, np.nan),
+        "dip_recovery": np.full(n, np.nan),
+        "beta": np.full(n, 1.0),
+    }
 
-    beta = 1.0
-    if spy_returns is not None:
-        beta = _compute_beta(returns, spy_returns)
+    last_params = {k: v[0] for k, v in daily_params.items()}
 
-    # --- ATR stop/profit multipliers ---
-    # Continuous scale: at 15% vol -> 0.85x base, at 25% vol -> 1.0x, at 45% vol -> 1.5x
-    vol_scale = np.clip(0.5 + (ann_vol - 0.15) / 0.30 * 1.0, 0.75, 1.6)
-    atr_stop = base_atr_stop * vol_scale
-    atr_profit = base_atr_profit * vol_scale
+    for i in range(100, n):
+        if i % update_freq == 0:
+            window_prices = prices.iloc[:i+1]
+            window_returns = returns.iloc[:i]
 
-    # --- Z-score entry threshold ---
-    # Lower Hurst (more mean-reverting) -> looser threshold (more signals)
-    # H=0.35 -> z=1.4, H=0.50 -> z=1.7, H=0.65 -> z=2.1
-    z_entry = base_z_entry + (hurst - 0.50) * 2.5
-    z_entry = float(np.clip(z_entry, 1.3, 2.3))
+            ann_vol = float(window_returns.std() * np.sqrt(252))
+            hurst = _hurst_exponent(window_returns)
+            recovery_rate, _ = _dip_recovery_rate(window_prices, zscore_threshold=-base_z_entry)
 
-    # --- Max position size ---
-    # Inverse of volatility: low vol -> bigger positions, high vol -> smaller
-    # 15% vol -> 15%, 25% vol -> 12%, 45% vol -> 7%
-    pos_size = base_max_pos * (1.0 - (ann_vol - 0.25) * 1.5)
-    pos_size = float(np.clip(pos_size, 0.05, 0.18))
+            beta = 1.0
+            if spy_returns is not None:
+                beta = _compute_beta(window_returns, spy_returns.iloc[:i])
 
-    # --- Min signal strength ---
-    # High recovery -> trust signals more (lower threshold)
-    # 90% recovery -> 0.22, 80% -> 0.28, 65% -> 0.38
-    strength_adjust = (recovery_rate - 0.80) * 0.6
-    min_strength = base_min_strength - strength_adjust
-    min_strength = float(np.clip(min_strength, 0.18, 0.45))
+            vol_scale = np.clip(0.5 + (ann_vol - 0.15) / 0.30 * 1.0, 0.75, 1.6)
+            atr_stop = base_atr_stop * vol_scale
+            atr_profit = base_atr_profit * vol_scale
+
+            z_entry = base_z_entry + (hurst - 0.50) * 2.5
+            z_entry = float(np.clip(z_entry, 1.3, 2.3))
+
+            pos_size = base_max_pos * (1.0 - (ann_vol - 0.25) * 1.5)
+            pos_size = float(np.clip(pos_size, 0.05, 0.18))
+
+            strength_adjust = (recovery_rate - 0.80) * 0.6
+            min_strength = base_min_strength - strength_adjust
+            min_strength = float(np.clip(min_strength, 0.18, 0.45))
+
+            last_params.update({
+                "atr_stop_mult": round(atr_stop, 3),
+                "atr_profit_mult": round(atr_profit, 3),
+                "z_score_entry_threshold": round(z_entry, 3),
+                "min_signal_strength": round(min_strength, 3),
+                "max_position_size_pct": round(pos_size, 4),
+                "ann_vol": round(ann_vol, 4),
+                "hurst": round(hurst, 3),
+                "dip_recovery": round(recovery_rate, 3),
+                "beta": round(beta, 2),
+            })
+
+        for k in daily_params.keys():
+            daily_params[k][i] = last_params[k]
 
     profile = StockProfile(
         symbol=symbol,
-        atr_stop_mult=round(atr_stop, 3),
-        atr_profit_mult=round(atr_profit, 3),
-        z_score_entry_threshold=round(z_entry, 3),
-        min_signal_strength=round(min_strength, 3),
-        max_position_size_pct=round(pos_size, 4),
-        ann_vol=round(ann_vol, 4),
-        hurst=round(hurst, 3),
-        dip_recovery=round(recovery_rate, 3),
-        beta=round(beta, 2),
+        atr_stop_mult=pd.Series(daily_params["atr_stop_mult"], index=dates),
+        atr_profit_mult=pd.Series(daily_params["atr_profit_mult"], index=dates),
+        z_score_entry_threshold=pd.Series(daily_params["z_score_entry_threshold"], index=dates),
+        min_signal_strength=pd.Series(daily_params["min_signal_strength"], index=dates),
+        max_position_size_pct=pd.Series(daily_params["max_position_size_pct"], index=dates),
+        ann_vol=pd.Series(daily_params["ann_vol"], index=dates),
+        hurst=pd.Series(daily_params["hurst"], index=dates),
+        dip_recovery=pd.Series(daily_params["dip_recovery"], index=dates),
+        beta=pd.Series(daily_params["beta"], index=dates),
     )
     return profile
 
@@ -194,7 +206,7 @@ def print_profiles(profiles: Dict[str, StockProfile]) -> None:
         return
 
     print(f"\n{'='*95}")
-    print("  PER-STOCK ADAPTIVE PROFILES")
+    print("  PER-STOCK ADAPTIVE PROFILES (Latest Values)")
     print(f"{'='*95}")
     print(f"  {'Symbol':<8} {'ATR Stop':<10} {'ATR TP':<10} {'Z-Entry':<10} "
           f"{'MinStr':<10} {'MaxPos%':<10} {'AnnVol':<10} {'Hurst':<8} {'Recov':<8} {'Beta':<6}")
@@ -213,14 +225,24 @@ def print_profiles(profiles: Dict[str, StockProfile]) -> None:
 
     for symbol, p in sorted(profiles.items()):
         override_flag = " *" if p.is_override else ""
-        stop_delta = f"({p.atr_stop_mult - base_stop:+.2f})"
-        z_delta = f"({p.z_score_entry_threshold - base_z:+.2f})"
-        pos_delta = f"({(p.max_position_size_pct - base_pos) * 100:+.1f}pp)"
+        
+        def get_val(val):
+            return val.iloc[-1] if isinstance(val, pd.Series) else val
+            
+        atr_stop = get_val(p.atr_stop_mult)
+        atr_profit = get_val(p.atr_profit_mult)
+        z_entry = get_val(p.z_score_entry_threshold)
+        min_str = get_val(p.min_signal_strength)
+        pos_size = get_val(p.max_position_size_pct)
+        ann_vol = get_val(p.ann_vol)
+        hurst = get_val(p.hurst)
+        recov = get_val(p.dip_recovery)
+        beta = get_val(p.beta)
 
-        print(f"  {symbol:<8} {p.atr_stop_mult:<10.3f} {p.atr_profit_mult:<10.3f} "
-              f"{p.z_score_entry_threshold:<10.3f} {p.min_signal_strength:<10.3f} "
-              f"{p.max_position_size_pct:<10.2%} {p.ann_vol:<10.1%} "
-              f"{p.hurst:<8.3f} {p.dip_recovery:<8.0%} {p.beta:<6.2f}{override_flag}")
+        print(f"  {symbol:<8} {atr_stop:<10.3f} {atr_profit:<10.3f} "
+              f"{z_entry:<10.3f} {min_str:<10.3f} "
+              f"{pos_size:<10.2%} {ann_vol:<10.1%} "
+              f"{hurst:<8.3f} {recov:<8.0%} {beta:<6.2f}{override_flag}")
 
     print(f"\n  * = has manual overrides from STOCK_PROFILE_OVERRIDES")
     print(f"\n  Calibration logic:")

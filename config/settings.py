@@ -73,7 +73,7 @@ MIN_OPTIONAL_CONFIRMATIONS = 1
 BACKTEST_END_DATE = ""
 
 # Per-stock adaptive profiles: auto-calibrate parameters from historical data
-USE_STOCK_PROFILES = False
+USE_STOCK_PROFILES = True
 
 # Manual per-stock overrides (applied on top of auto-calibration).
 # Keys are symbols; values are dicts of parameter overrides.
