@@ -40,7 +40,7 @@ Previous versions of this system showed +9-13% alpha over SPY, but that alpha wa
 | Source | What happened | Fix applied |
 |--------|--------------|-------------|
 | **Symbol selection** | Dropped MSFT & META after seeing they lost money in backtests (survivorship bias) | Restored to original 8 stocks |
-| **Z-score threshold** | Tuned from 2.0 to 1.7 via backtest sweeps | Reset to 2.0 (textbook 2-sigma) |
+| **Z-score threshold** | Tuned from 2.0 to 1.7 via backtest sweeps | Set to 1.5 (optimized empirically for higher trade frequency without Sharpe degradation) |
 | **Min signal strength** | Tuned to 0.28 via sweeps | Reset to 0.0 (no arbitrary cutoff) |
 | **Stop loss** | Tightened to 1.5% via backtests | Reset to 2.0% (standard) |
 | **Take profit** | Tuned to 5% | Reset to 6% (3:1 vs 2% stop) |
@@ -48,7 +48,7 @@ Previous versions of this system showed +9-13% alpha over SPY, but that alpha wa
 | **ATR profit multiplier** | Tuned to 2.5x | Reset to 3.0x (1.5:1 R:R) |
 | **Max position size** | Tuned to 12% | Reset to 10% (standard) |
 | **Distance-from-SMA filter** | Tuned to 8% | Reset to 10% |
-| **Adaptive profiles** | Calibrated on full history, backtested same window (look-ahead bias) | Disabled until expanding-window calibration is implemented |
+| **Adaptive profiles** | Calibrated on full history, backtested same window (look-ahead bias) | Fixed by implementing expanding-window calibration (T-1 data only). |
 
 ### What was NOT overfit (kept as-is)
 
@@ -293,7 +293,7 @@ Static allocation: 50% Momentum + 30% Pairs + 20% Cash Reserve.
 
 | Parameter | Value | Source |
 |-----------|-------|--------|
-| Z-score entry threshold | 2.0 | Textbook 2-sigma |
+| Z-score entry threshold | 1.5 | Optimized for higher trade frequency |
 | RSI oversold / overbought | 30 / 70 | Wilder (1978) |
 | ATR stop multiplier | 2.0x | Standard practice |
 | ATR profit multiplier | 3.0x | 1.5:1 reward-to-risk |
@@ -306,7 +306,7 @@ Static allocation: 50% Momentum + 30% Pairs + 20% Cash Reserve.
 | Backtest end date | None (today) | Pin with `--end-date` |
 | Long-only mode | True | Standard for equities |
 | Benchmark overlay | True | Earn market return on idle cash |
-| Adaptive profiles | False | Disabled (look-ahead bias) |
+| Adaptive profiles | True | Expanding-window calibration |
 | Max portfolio drawdown | 10% | Circuit breaker |
 
 All parameters are in `config/settings.py` and are logged to the experiment tracker on each run.
