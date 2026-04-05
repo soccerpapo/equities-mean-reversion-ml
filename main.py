@@ -874,12 +874,12 @@ def run_analyze(symbols: list, years: int = 2) -> None:
         print(f"    Equity curve: backtest_results.png")
 
 
-def run_sweep(symbols: list, years: int = 2) -> None:
+def run_sweep(symbols: list, years: int = 2, use_ml: bool = True) -> None:
     """Run a parameter sweep over z-score thresholds and signal strengths.
 
     Tests every combination of:
-      Z_SCORE_ENTRY_THRESHOLD: [1.5, 1.6, 1.7, 1.8, 1.9, 2.0]
-      MIN_SIGNAL_STRENGTH:     [0.20, 0.25, 0.28, 0.30, 0.35, 0.40]
+      Z_SCORE_ENTRY_THRESHOLD: [1.3, 1.4, 1.5, 1.6, 1.7, 1.8]
+      MIN_SIGNAL_STRENGTH:     [0.0, 0.10, 0.20, 0.25, 0.30]
 
     Each run logs to the experiment tracker. At the end, prints a ranked
     summary of all combinations by Sharpe ratio.
@@ -887,7 +887,10 @@ def run_sweep(symbols: list, years: int = 2) -> None:
     Args:
         symbols: List of symbols to test on
         years: Number of years of data
+        use_ml: Whether to apply the ML filter
     """
+    import datetime
+    import pandas as pd
     from data.fetcher import DataFetcher
     from features.indicators import IndicatorEngine
     from strategy.signals import SignalGenerator
@@ -895,8 +898,8 @@ def run_sweep(symbols: list, years: int = 2) -> None:
     from analysis.experiment_tracker import log_experiment, print_experiment_summary
     from config import settings
 
-    z_values = [1.5, 1.6, 1.7, 1.8, 1.9, 2.0]
-    strength_values = [0.20, 0.25, 0.28, 0.30, 0.35, 0.40]
+    z_values = [1.3, 1.4, 1.5, 1.6, 1.7, 1.8]
+    strength_values = [0.0, 0.10, 0.20, 0.25, 0.30]
 
     period = f"{years}y"
     fetcher = DataFetcher()
@@ -913,10 +916,41 @@ def run_sweep(symbols: list, years: int = 2) -> None:
     if not raw_data:
         logger.error("No data fetched for sweep.")
         return
+        
+    ml_filter = None
+    if use_ml:
+        from strategy.ml_filter import MLSignalFilter
+        
+        end_date_str = getattr(settings, "BACKTEST_END_DATE", "")
+        if not end_date_str:
+            end_date_str = datetime.date.today().strftime("%Y-%m-%d")
+            
+        test_end_dt = pd.Timestamp(end_date_str)
+        test_start_dt = test_end_dt - pd.DateOffset(years=years)
+        
+        ml_lookback = getattr(settings, "ML_LOOKBACK_YEARS", 5)
+        train_start_dt = test_start_dt - pd.DateOffset(years=ml_lookback)
+        train_end_dt = test_start_dt
+        
+        logger.info(f"Training ML model out-of-sample on {ml_lookback} years of data ending {train_end_dt.strftime('%Y-%m-%d')}...")
+        ml_filter = MLSignalFilter()
+        ml_filter.train_multi_symbol(
+            symbols, 
+            start_date=train_start_dt.strftime("%Y-%m-%d"), 
+            end_date=train_end_dt.strftime("%Y-%m-%d")
+        )
+        
+    ind_engine = IndicatorEngine()
+    sig_gen = SignalGenerator()
+    precomputed_data = {}
+    for sym, df_raw in raw_data.items():
+        precomputed_data[sym] = ind_engine.compute_all(df_raw.copy(), vix_data=vix_data)
 
     total_combos = len(z_values) * len(strength_values)
     combo_num = 0
     results = []
+    
+    use_profiles = getattr(settings, "USE_STOCK_PROFILES", False)
 
     for z_thresh in z_values:
         for min_str in strength_values:
@@ -926,18 +960,24 @@ def run_sweep(symbols: list, years: int = 2) -> None:
 
             combo_label = f"z={z_thresh}, str={min_str}"
             print(f"\n[{combo_num}/{total_combos}] Testing {combo_label}...")
+            
+            profiles = {}
+            if use_profiles:
+                from analysis.stock_profiles import calibrate_all
+                profiles = calibrate_all(symbols, period=period)
 
             combo_returns = []
             combo_sharpes = []
             combo_trades = 0
             combo_alphas = []
 
-            for symbol, df_raw in raw_data.items():
-                ind_engine = IndicatorEngine()
-                sig_gen = SignalGenerator()
-
-                df = ind_engine.compute_all(df_raw.copy(), vix_data=vix_data)
-                df = sig_gen.generate_mean_reversion_signals(df)
+            for symbol, df_base in precomputed_data.items():
+                df = df_base.copy()
+                profile = profiles.get(symbol)
+                
+                df = sig_gen.generate_mean_reversion_signals(df, profile=profile)
+                if ml_filter is not None:
+                    df = ml_filter.filter_signals(df)
 
                 bt = BacktestEngine()
                 bt._current_symbol = symbol
@@ -983,7 +1023,7 @@ def run_sweep(symbols: list, years: int = 2) -> None:
                   f"trades={combo_trades}, avg_alpha={avg_alpha:.4f}")
 
     # Restore domain defaults
-    settings.Z_SCORE_ENTRY_THRESHOLD = 2.0
+    settings.Z_SCORE_ENTRY_THRESHOLD = 1.5
     settings.MIN_SIGNAL_STRENGTH = 0.0
 
     # Print ranked results
