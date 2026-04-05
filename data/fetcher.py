@@ -42,13 +42,15 @@ class DataFetcher:
         except Exception as e:
             logger.warning(f"Could not initialize Alpaca client: {e}")
 
-    def fetch_historical(self, symbol: str, period: str = "1y", interval: str = "1d") -> pd.DataFrame:
+    def fetch_historical(self, symbol: str, period: str = "1y", interval: str = "1d", start_date: str = None, end_date: str = None) -> pd.DataFrame:
         """Fetch historical OHLCV data using yfinance.
 
         Args:
             symbol: Ticker symbol
             period: Data period (e.g., '1y', '6mo')
             interval: Data interval (e.g., '1d', '1h')
+            start_date: Absolute start date (YYYY-MM-DD)
+            end_date: Absolute end date (YYYY-MM-DD)
 
         Returns:
             DataFrame with standardized column names
@@ -59,11 +61,14 @@ class DataFetcher:
         for attempt in range(3):
             try:
                 ticker = yf.Ticker(symbol)
-                if pinned_end:
-                    start_date = _period_to_start_date(period, pinned_end)
+                if start_date and end_date:
+                    end_dt = pd.Timestamp(end_date) + pd.DateOffset(days=1)
+                    df = ticker.history(start=start_date, end=end_dt.strftime("%Y-%m-%d"), interval=interval)
+                elif pinned_end:
+                    start_dt = _period_to_start_date(period, pinned_end)
                     # end is exclusive in yfinance, add 1 day so the pinned date is included
                     end_dt = pd.Timestamp(pinned_end) + pd.DateOffset(days=1)
-                    df = ticker.history(start=start_date, end=end_dt.strftime("%Y-%m-%d"), interval=interval)
+                    df = ticker.history(start=start_dt, end=end_dt.strftime("%Y-%m-%d"), interval=interval)
                 else:
                     df = ticker.history(period=period, interval=interval)
                 if df.empty:

@@ -293,7 +293,7 @@ class MLSignalFilter:
 
         self._log_feature_importance()
 
-    def train_multi_symbol(self, symbols: List[str]) -> None:
+    def train_multi_symbol(self, symbols: List[str], start_date: str = None, end_date: str = None) -> None:
         """Train on multiple symbols combined for richer training data.
 
         Fetches ML_LOOKBACK_YEARS years of data for each symbol, computes indicators,
@@ -301,6 +301,8 @@ class MLSignalFilter:
 
         Args:
             symbols: List of ticker symbols to include in training
+            start_date: Optional start date (YYYY-MM-DD)
+            end_date: Optional end date (YYYY-MM-DD)
         """
         import time
         from data.fetcher import DataFetcher
@@ -318,7 +320,10 @@ class MLSignalFilter:
 
         for symbol in symbols:
             logger.info(f"Fetching training data for {symbol}...")
-            df = fetcher.fetch_historical(symbol, period=period)
+            if start_date and end_date:
+                df = fetcher.fetch_historical(symbol, start_date=start_date, end_date=end_date)
+            else:
+                df = fetcher.fetch_historical(symbol, period=period)
             if df.empty:
                 logger.warning(f"No data for {symbol}, skipping")
                 continue

@@ -63,7 +63,7 @@ def _prepare_signals(
     fetcher,
     ind_engine,
     sig_gen,
-    use_ml: bool = True,
+    ml_filter=None,
     use_regime: bool = False,
     vix_data: pd.Series = None,
     profile=None,
@@ -76,7 +76,7 @@ def _prepare_signals(
         fetcher: DataFetcher instance
         ind_engine: IndicatorEngine instance
         sig_gen: SignalGenerator instance
-        use_ml: Whether to apply the ML signal filter
+        ml_filter: Optional pre-trained MLSignalFilter instance
         use_regime: Whether to compute and return regime labels
         vix_data: Optional VIX close prices for macro filtering
         profile: Optional StockProfile with per-stock parameter overrides
@@ -84,7 +84,6 @@ def _prepare_signals(
     Returns:
         Tuple (signals_df, regime_series) where regime_series may be None
     """
-    from strategy.ml_filter import MLSignalFilter
     from strategy.regime_detector import RegimeDetector
     from config import settings
 
@@ -96,9 +95,7 @@ def _prepare_signals(
     df = ind_engine.compute_all(df, vix_data=vix_data)
     df = sig_gen.generate_mean_reversion_signals(df, profile=profile)
 
-    if use_ml:
-        ml_filter = MLSignalFilter()
-        ml_filter.train(df)
+    if ml_filter is not None:
         df = ml_filter.filter_signals(df)
 
     regime_series = None
@@ -182,6 +179,7 @@ def run_backtest(
         use_atr_stops: Whether to use ATR-based dynamic stops
     """
     import pandas as pd
+    import datetime
     from data.fetcher import DataFetcher
     from features.indicators import IndicatorEngine
     from strategy.signals import SignalGenerator
@@ -197,13 +195,36 @@ def run_backtest(
     vix_data = _fetch_vix(fetcher, period)
     benchmark_prices = _fetch_benchmark_prices(fetcher, period)
 
+    ml_filter = None
+    if use_ml:
+        from strategy.ml_filter import MLSignalFilter
+        
+        end_date_str = getattr(settings, "BACKTEST_END_DATE", "")
+        if not end_date_str:
+            end_date_str = datetime.date.today().strftime("%Y-%m-%d")
+            
+        test_end_dt = pd.Timestamp(end_date_str)
+        test_start_dt = test_end_dt - pd.DateOffset(years=years)
+        
+        ml_lookback = getattr(settings, "ML_LOOKBACK_YEARS", 5)
+        train_start_dt = test_start_dt - pd.DateOffset(years=ml_lookback)
+        train_end_dt = test_start_dt
+        
+        logger.info(f"Training ML model out-of-sample on {ml_lookback} years of data ending {train_end_dt.strftime('%Y-%m-%d')}...")
+        ml_filter = MLSignalFilter()
+        ml_filter.train_multi_symbol(
+            symbols, 
+            start_date=train_start_dt.strftime("%Y-%m-%d"), 
+            end_date=train_end_dt.strftime("%Y-%m-%d")
+        )
+
     summary_rows = []
 
     for symbol in symbols:
         logger.info(f"Starting backtest for {symbol}...")
         df, regime_series = _prepare_signals(
             symbol, period, fetcher, ind_engine, sig_gen,
-            use_ml=use_ml, use_regime=use_regime,
+            ml_filter=ml_filter, use_regime=use_regime,
             vix_data=vix_data,
         )
         if df is None:
@@ -986,7 +1007,7 @@ def run_sweep(symbols: list, years: int = 2) -> None:
     print_experiment_summary()
 
 
-def run_portfolio(symbols: list, years: int = 2) -> None:
+def run_portfolio(symbols: list, years: int = 2, use_ml: bool = True) -> None:
     """Multi-symbol portfolio backtest with SPY benchmark overlay.
 
     All idle capital is invested in SPY.  When any symbol fires a
@@ -998,7 +1019,10 @@ def run_portfolio(symbols: list, years: int = 2) -> None:
     Args:
         symbols: List of NON-benchmark symbols to trade mean-reversion on
         years: Number of years of data
+        use_ml: Whether to apply the ML signal filter (False for pure statistical)
     """
+    import datetime
+    import pandas as pd
     from data.fetcher import DataFetcher
     from features.indicators import IndicatorEngine
     from strategy.signals import SignalGenerator
@@ -1035,6 +1059,29 @@ def run_portfolio(symbols: list, years: int = 2) -> None:
         logger.info("Calibrating per-stock adaptive profiles...")
         profiles = calibrate_all(trade_symbols, period=period)
         print_profiles(profiles)
+        
+    ml_filter = None
+    if use_ml:
+        from strategy.ml_filter import MLSignalFilter
+        
+        end_date_str = getattr(settings, "BACKTEST_END_DATE", "")
+        if not end_date_str:
+            end_date_str = datetime.date.today().strftime("%Y-%m-%d")
+            
+        test_end_dt = pd.Timestamp(end_date_str)
+        test_start_dt = test_end_dt - pd.DateOffset(years=years)
+        
+        ml_lookback = getattr(settings, "ML_LOOKBACK_YEARS", 5)
+        train_start_dt = test_start_dt - pd.DateOffset(years=ml_lookback)
+        train_end_dt = test_start_dt
+        
+        logger.info(f"Training ML model out-of-sample on {ml_lookback} years of data ending {train_end_dt.strftime('%Y-%m-%d')}...")
+        ml_filter = MLSignalFilter()
+        ml_filter.train_multi_symbol(
+            trade_symbols, 
+            start_date=train_start_dt.strftime("%Y-%m-%d"), 
+            end_date=train_end_dt.strftime("%Y-%m-%d")
+        )
 
     # Prepare signals for each symbol
     signals_by_symbol = {}
@@ -1042,7 +1089,7 @@ def run_portfolio(symbols: list, years: int = 2) -> None:
         profile = profiles.get(symbol)
         df, _ = _prepare_signals(
             symbol, period, fetcher, ind_engine, sig_gen,
-            use_ml=True, use_regime=False,
+            ml_filter=ml_filter, use_regime=False,
             vix_data=vix_data,
             profile=profile,
         )
