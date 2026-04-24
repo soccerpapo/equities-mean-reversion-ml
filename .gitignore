@@ -17,3 +17,4 @@ logs/
 .DS_Store
 trade_log_*.csv
 experiments/
+.html

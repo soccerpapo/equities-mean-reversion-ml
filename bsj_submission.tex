@@ -22,10 +22,6 @@
     \vspace{0.5cm}
     
     Jose Miguel Diez Chaupis
-    
-    Research Sponsor (PI): Dr. [Sponsor Name] % Placeholder
-    
-    Computer Science, 2026, Department of Electrical Engineering and Computer Sciences
 \end{center}
 
 \vspace{0.5cm}
@@ -52,19 +48,45 @@ Historical end-of-day price and volume data (Open, High, Low, Close, Volume) wer
 
 \textbf{Feature Engineering and Strategy Generation}
 
-A base mean-reversion strategy was implemented utilizing multiple technical indicators. Primary entry signals were generated when an asset's price deviated negatively beyond a defined z-score threshold (e.g., -1.5). These signals were subject to a five-layer filtering mechanism, including a trend filter (200-day Simple Moving Average), a volatility regime filter (20-day volatility within the 20th to 80th percentiles), and a distance-from-fair-value filter.
+A base mean-reversion strategy was implemented utilizing multiple technical indicators. Primary entry signals were generated when an asset's price deviated negatively beyond a defined z-score threshold. The z-score at time $t$, $z_t$, is calculated as:
+\begin{equation}
+z_t = \frac{P_t - \mu_{20,t}}{\sigma_{20,t}}
+\end{equation}
+where $P_t$ is the closing price, $\mu_{20,t}$ is the 20-day simple moving average, and $\sigma_{20,t}$ is the 20-day rolling standard deviation. These signals were subject to a five-layer filtering mechanism, including a trend filter (200-day Simple Moving Average), a volatility regime filter (20-day volatility within the 20th to 80th percentiles), and a distance-from-fair-value filter.
 
 An `IndicatorEngine` computed a comprehensive feature set for each daily observation, including RSI, MACD histogram, Bollinger Band bandwidth, and short-term return lags. Derived features designed to capture signal quality, such as the rate of change of the z-score and the Bollinger Band squeeze percentile, were also calculated. 
 
 \textbf{Machine Learning Filter Implementation}
 
-A LightGBM classifier was employed to predict the probability of a signal resulting in a profitable trade. Labels were assigned based on forward risk-adjusted returns over a five-day horizon; a trade was classified as positive (1) only if the forward return exceeded 1.5 times the recent 20-day realized volatility.
+A LightGBM classifier was employed to predict the probability of a signal resulting in a profitable trade. Labels were assigned based on forward risk-adjusted returns over a five-day horizon. A trade setup at time $t$ was classified with a positive label ($y_t = 1$) only if the forward return exceeded 1.5 times the recent 20-day realized volatility:
+\begin{equation}
+y_t = 
+\begin{cases} 
+1 & \text{if } \left(\frac{P_{t+5}}{P_t} - 1\right) > 1.5 \cdot \sigma_{ret, 20, t} \\ 
+0 & \text{otherwise} 
+\end{cases}
+\end{equation}
+where $\sigma_{ret, 20, t}$ is the standard deviation of daily returns over the preceding 20 days.
 
 The model was trained exclusively on the five-year training block. To ensure robustness and prevent data leakage, a purged cross-validation methodology was utilized, incorporating a five-day gap between training and validation folds. Hyperparameters were optimized via grid search on the training data. The resulting model was then frozen. During the out-of-sample backtest, any heuristic signal generated was passed through this frozen model. Signals with an ML confidence score below a defined threshold were overridden and rejected.
 
 \textbf{Risk Management and Adaptive Profiles}
 
 Risk management was handled dynamically using Expanding-Window Adaptive Profiles. Position sizing, stop-loss, and take-profit multipliers (based on the Average True Range) were calculated on a rolling, expanding window basis. For any day $T$, parameters were calibrated using data only up to day $T-1$, effectively nullifying look-ahead bias in risk parameterization. 
+
+Furthermore, to adaptively allocate capital based on prevailing market conditions, a Gaussian Mixture Model (GMM) was utilized for unsupervised regime detection. The probability density function of a three-component GMM evaluating daily market returns $x$ is defined as:
+\begin{equation}
+p(x) = \sum_{k=1}^{3} \pi_k \mathcal{N}(x \mid \mu_k, \Sigma_k)
+\end{equation}
+where $\pi_k$ represents the mixing weight, and $\mathcal{N}(x \mid \mu_k, \Sigma_k)$ is the multivariate normal distribution for regime $k$ with mean $\mu_k$ and covariance $\Sigma_k$. Capital allocation and position sizing multipliers were dynamically adjusted based on the highest-probability inferred regime.
+
+\textbf{Market-Neutral Pairs Trading}
+
+In addition to directional mean-reversion, the system incorporated a market-neutral pairs trading module. To identify statistically robust pairs, the Engle-Granger two-step method for cointegration was applied. For two asset price series $P^{(A)}_t$ and $P^{(B)}_t$, an Ordinary Least Squares (OLS) regression is first performed:
+\begin{equation}
+P^{(A)}_t = \alpha + \beta P^{(B)}_t + \varepsilon_t
+\end{equation}
+where $\beta$ is the hedge ratio. Subsequently, the stationarity of the residuals $\varepsilon_t$ is tested using an Augmented Dickey-Fuller (ADF) test. If the residuals are stationary (i.e., $p$-value $< 0.05$), the pair is deemed cointegrated, allowing the strategy to trade mean-reverting deviations in the spread $\varepsilon_t$.
 
 \textbf{Parameter Sweep and Evaluation}
 
