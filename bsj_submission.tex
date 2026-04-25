@@ -44,7 +44,7 @@ This study addresses the problem of parameter fragility and look-ahead bias by p
 
 \textbf{Data Acquisition and Preparation}
 
-Historical end-of-day price and volume data (Open, High, Low, Close, Volume) were sourced for eight large-capitalization equities (SPY, AAPL, MSFT, GOOGL, AMZN, NVDA, TSLA, META) representing a diversified portfolio. Data were fetched programmatically using the `yfinance` library. To prevent look-ahead bias, the data were partitioned temporally into a five-year training block and a subsequent two-year out-of-sample backtesting block. 
+Historical end-of-day price and volume data (Open, High, Low, Close, Volume) were sourced for an expanded universe of twenty equities. These equities were selected via rigorous quantitative screening, targeting mean-reverting characteristics such as a Hurst Exponent below 0.5, a 5-day variance ratio below 1.0, and a 5-year empirical dip-recovery rate exceeding 80\%. Data were fetched programmatically using the `yfinance` library. To prevent look-ahead bias, the data were partitioned temporally into a five-year training block and a subsequent two-year out-of-sample backtesting block. 
 
 \textbf{Feature Engineering and Strategy Generation}
 
@@ -96,9 +96,9 @@ To test the hypothesis of parameter invariance, a programmatic parameter sweep w
 
 The parameter sweep tested thirty distinct configurations of the baseline mean-reversion heuristics across the two-year out-of-sample testing window. The configurations ranged from highly permissive (Z-score threshold of 1.3, minimum signal strength of 0.0) to restrictive (Z-score threshold of 1.8, minimum signal strength of 0.30).
 
-The results of the sweep revealed complete uniformity across all tested configurations. Every parameter combination produced identical performance metrics. Specifically, regardless of the initial heuristic parameters, the trading system executed exactly eight trades over the two-year period. 
+The results of the sweep revealed complete uniformity across all tested configurations. Every parameter combination produced identical performance metrics. Specifically, regardless of the initial heuristic parameters, the trading system executed exactly 65 trades over the two-year period. 
 
-The strategy yielded an average total return of 30.49\%. The risk-adjusted performance, measured by the Sharpe ratio, was consistent at 0.8739 for all configurations. The strategy generated an average alpha of -0.3392 against the SPY benchmark. 
+Across the expanded 20-stock universe, the strategy yielded an average total return of 38.37\% (17.78\% annualized). The risk-adjusted performance, measured by the Sharpe ratio, was consistent at 0.9915 for all configurations. The strategy generated an average alpha of -0.0688 against the SPY benchmark. 
 
 The LightGBM model, trained on the preceding five-year window, demonstrated a cross-validation score of 0.6241. Feature importance analysis from the training phase indicated that the volatility regime (`vol_regime`), Bollinger Band bandwidth (`bb_bandwidth`), and distance from the 200-day Simple Moving Average (`dist_sma200`) were the most significant predictive features. 
 
@@ -106,11 +106,11 @@ The LightGBM model, trained on the preceding five-year window, demonstrated a cr
 
 This study sought to evaluate whether a temporally isolated machine learning filter could mitigate parameter overfitting in a mean-reversion trading strategy. The hypothesis was that the ML model would learn the true statistical edge of the setups and override manual parameter tuning.
 
-The results strongly support this hypothesis. The observation that thirty distinct, manually defined parameter configurations resulted in the exact same eight trades is highly significant. It demonstrates the phenomenon of parameter invariance induced by the ML layer. When the underlying heuristics were loosened (e.g., setting the z-score threshold to 1.3), the system inherently generated a larger volume of "noisy," lower-probability signals. However, because the ML model was trained on a rigorous five-year out-of-sample dataset, it recognized that these marginal setups lacked a statistical edge and systematically rejected them. Conversely, it consistently identified and approved the same core set of high-conviction trades across all test cases.
+The results strongly support this hypothesis. The observation that thirty distinct, manually defined parameter configurations resulted in the exact same 65 trades is highly significant. It demonstrates the phenomenon of parameter invariance induced by the ML layer. When the underlying heuristics were loosened (e.g., setting the z-score threshold to 1.3), the system inherently generated a larger volume of "noisy," lower-probability signals. However, because the ML model was trained on a rigorous five-year out-of-sample dataset, it recognized that these marginal setups lacked a statistical edge and systematically rejected them. Conversely, it consistently identified and approved the same core set of high-conviction trades across all test cases.
 
-This invariance indicates that the system is no longer reliant on the precise, and often fragile, tuning of heuristic parameters. By removing look-ahead bias through strict temporal splitting and expanding-window calibration for risk profiles, the strategy's performance (Sharpe ratio of 0.8739) is arguably a more authentic representation of its out-of-sample efficacy than prior in-sample optimizations that yielded artificially higher returns.
+This invariance indicates that the system is no longer reliant on the precise, and often fragile, tuning of heuristic parameters. By removing look-ahead bias through strict temporal splitting and expanding-window calibration for risk profiles, the strategy's performance (Sharpe ratio of 0.9915) is arguably a more authentic representation of its out-of-sample efficacy than prior in-sample optimizations that yielded artificially higher returns.
 
-A limitation of this study is the relatively small sample size of executed trades (eight) within the two-year test window. While the model successfully avoided bad trades, the low frequency suggests that strict ML filtering on stringent risk-adjusted labels may severely restrict capital deployment opportunities.
+A limitation of this study is the relatively small sample size of executed trades (65) within the two-year test window. While the model successfully avoided bad trades, the low frequency suggests that strict ML filtering on stringent risk-adjusted labels may severely restrict capital deployment opportunities.
 
 These findings have important implications for algorithmic trading system design. They suggest that developers can deploy strategies with moderately permissive baseline parameters, relying on a robustly trained ML filter to serve as the ultimate arbiter of trade execution. Future research should involve forward-testing this architecture via paper trading in live market conditions to validate the persistence of this edge and explore techniques to increase trade frequency without compromising the established filtering stringency. 
 

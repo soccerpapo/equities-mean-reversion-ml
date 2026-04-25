@@ -77,7 +77,10 @@ These are sound theoretical priors, not data-mined decisions:
 2. **✅ Temporal train/test split** -- The ML filter is now trained on a strict 5-year out-of-sample window ending *before* the backtest begins. This eliminates all look-ahead bias and revealed that the ML layer creates **parameter invariance**—aggressively filtering noisy trades regardless of manual thresholds.
 3. **✅ Increase trade count** -- Lowered base Z-score entry threshold to 1.5, effectively doubling trades while maintaining a ~0.94 Sharpe ratio.
 4. **✅ Out-of-sample validation** -- Verified the updated strategy holds up out-of-sample on non-tech stocks (JNJ, JPM, UNH, V, PG, HD) with a 0.81 Sharpe ratio.
-5. **⏳ Paper trading** -- The Alpaca paper trading script is currently running in the background to forward-test the system in real-time.
+5. **✅ Expand Trading Universe** -- Screened and integrated the top 20 mathematically best-performing stocks for mean-reversion and pairs trading.
+6. **✅ Containerization and Live Dashboard** -- Dockerized the application and built a real-time Streamlit dashboard for monitoring live strategy execution, including Regime, Pairs, and Momentum radars.
+7. **✅ Live Execution Logic** -- Wired up actual live paper trading execution for Pairs and Momentum strategies, triggered adaptively via the Gaussian Mixture Model regime detector.
+8. **⏳ Optimize Regime Switching & Strategy Alpha** -- Update the regime switching logic and explore different strategies to achieve positive alpha relative to the benchmark.
 
 ## Features
 

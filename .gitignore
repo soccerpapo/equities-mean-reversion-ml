@@ -11,10 +11,9 @@ venv/
 dist/
 build/
 .pytest_cache/
-*.png
+# *.png (Commented out to allow pushing PNGs)
 logs/
 *.log
 .DS_Store
 trade_log_*.csv
 experiments/
-.html

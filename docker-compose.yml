@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  trader:
+    build: .
+    container_name: equities-trader
+    env_file:
+      - .env
+    restart: unless-stopped
+    command: ["python", "main.py", "--mode", "trade", "--strategy", "adaptive"]
+
+  dashboard:
+    build: .
+    container_name: equities-dashboard
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    restart: unless-stopped
+    command: ["streamlit", "run", "dashboard.py", "--server.address=0.0.0.0"]

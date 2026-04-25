@@ -669,12 +669,12 @@ def run_train(symbols: list, years: int = 5) -> None:
     logger.info("Training complete.")
 
 
-def run_trade(use_ml: bool = True, use_regime: bool = False) -> None:
+def run_trade(strategy: str = "mean_reversion", use_ml: bool = True) -> None:
     """Live paper trading loop.
 
     Args:
+        strategy: 'mean_reversion', 'pairs', 'momentum', or 'adaptive'
         use_ml: Whether to apply the ML signal filter
-        use_regime: Whether to use regime detection for position sizing
     """
     from config import settings
     from data.fetcher import DataFetcher
@@ -690,13 +690,15 @@ def run_trade(use_ml: bool = True, use_regime: bool = False) -> None:
     sig_gen = SignalGenerator()
     risk_mgr = RiskManager()
 
+    use_regime = strategy == "adaptive"
+
     # Optionally pre-fit regime detector
     regime_detector = None
     if use_regime:
         n_components = getattr(settings, "REGIME_N_COMPONENTS", 3)
         regime_detector = RegimeDetector(n_components=n_components)
 
-    logger.info("Starting live trading loop. Press Ctrl+C to stop.")
+    logger.info(f"Starting live trading loop (strategy={strategy}). Press Ctrl+C to stop.")
     while _running:
         try:
             if not trader.is_market_open():
@@ -713,53 +715,130 @@ def run_trade(use_ml: bool = True, use_regime: bool = False) -> None:
             account_value = acct["equity"]
             positions = {p["symbol"]: p for p in trader.get_positions()}
 
-            for symbol in settings.SYMBOLS:
-                if not _running:
-                    break
-                df = fetcher.fetch_historical(symbol, period="6mo")
-                if df.empty:
+            # Identify current regime if adaptive
+            global_regime = 1  # Default to normal/momentum
+            if regime_detector is not None:
+                # Use SPY or first symbol to detect overall market regime
+                df_spy = fetcher.fetch_historical(getattr(settings, "BENCHMARK_OVERLAY_SYMBOL", "SPY"), period="6mo")
+                if not df_spy.empty:
+                    df_spy = ind_engine.compute_all(df_spy)
+                    regime_detector.fit(df_spy)
+                    global_regime, conf = regime_detector.detect_regime(df_spy)
+                    logger.info(f"Global Market Regime detected: {global_regime} (confidence: {conf:.2f})")
+
+            # Strategy Selection
+            active_strategy = strategy
+            if strategy == "adaptive":
+                if global_regime == 0:
+                    active_strategy = "pairs"
+                elif global_regime == 1:
+                    active_strategy = "momentum"
+                else:
+                    logger.info("Regime 2 (High Volatility/Crisis). Moving to cash.")
+                    trader.close_all_positions()
+                    time.sleep(settings.TRADING_INTERVAL_SECONDS)
                     continue
-                df = ind_engine.compute_all(df)
-                df = sig_gen.generate_mean_reversion_signals(df)
 
-                if use_ml:
-                    from strategy.ml_filter import MLSignalFilter
-                    ml_filter = MLSignalFilter()
-                    ml_filter.train(df)
-                    df = ml_filter.filter_signals(df)
+            logger.info(f"Active strategy for this cycle: {active_strategy}")
 
-                regime_multiplier = 1.0
-                if regime_detector is not None:
-                    regime_detector.fit(df)
-                    regime, conf = regime_detector.detect_regime(df)
-                    regime_multiplier = regime_detector.get_position_multiplier(regime)
-                    logger.info(f"{symbol}: regime={regime}, confidence={conf:.2f}, multiplier={regime_multiplier}")
+            if active_strategy == "pairs":
+                from strategy.pairs_trading import PairsTrader
+                pt = PairsTrader()
+                data_dict = {}
+                for sym in settings.SYMBOLS:
+                    df_sym = fetcher.fetch_historical(sym, period="1y")
+                    if not df_sym.empty:
+                        data_dict[sym] = df_sym["Close"]
+                if data_dict:
+                    coint_pairs = pt.find_cointegrated_pairs(list(data_dict.keys()), data_dict)
+                    for sym_a, sym_b, p_val, corr, hedge in coint_pairs:
+                        logger.info(f"Cointegrated pair found: {sym_a} and {sym_b} (hedge: {hedge:.2f})")
+                        df_spread = pt.calculate_spread(data_dict[sym_a], data_dict[sym_b], hedge)
+                        signals = pt.generate_signals(df_spread["spread_zscore"])
+                        latest_signal = int(signals["signal"].iloc[-1])
+                        
+                        price_a = float(data_dict[sym_a].iloc[-1])
+                        price_b = float(data_dict[sym_b].iloc[-1])
+                        
+                        in_pos_a = sym_a in positions
+                        in_pos_b = sym_b in positions
+                        
+                        if latest_signal in (pt.SIGNAL_BUY, pt.SIGNAL_SELL) and not (in_pos_a or in_pos_b):
+                            qty_a = max(1, int((account_value * 0.05) / price_a))
+                            qty_b = max(1, int((account_value * 0.05 * hedge) / price_b))
+                            
+                            side_a = "buy" if latest_signal == pt.SIGNAL_BUY else "sell"
+                            side_b = "sell" if latest_signal == pt.SIGNAL_BUY else "buy"
+                            
+                            trader.place_pairs_order(sym_a, qty_a, side_a, sym_b, qty_b, side_b)
+                            
+                        elif latest_signal in (pt.SIGNAL_CLOSE, pt.SIGNAL_STOP) and (in_pos_a or in_pos_b):
+                            if in_pos_a: trader.close_position(sym_a)
+                            if in_pos_b: trader.close_position(sym_b)
 
-                latest = df.iloc[-1]
-                signal = int(latest.get("signal", 0))
-                strength = float(latest.get("signal_strength", 0))
-                price = latest["Close"]
-                atr = float(latest.get("atr", 0.0))
+            elif active_strategy == "momentum":
+                from strategy.momentum import MomentumTrader
+                mt = MomentumTrader()
+                for symbol in settings.SYMBOLS:
+                    if not _running:
+                        break
+                    df = fetcher.fetch_historical(symbol, period="6mo")
+                    if df.empty:
+                        continue
+                    
+                    signals_df = mt.generate_signals(df)
+                    latest = signals_df.iloc[-1]
+                    signal = int(latest.get("signal", 0))
+                    price = float(latest["Close"])
 
-                if signal == 1 and symbol not in positions:
-                    qty = risk_mgr.calculate_position_size(
-                        account_value, price, strength, regime_multiplier=regime_multiplier
-                    )
-                    if qty > 0:
-                        use_atr = atr > 0
-                        if use_atr:
-                            sl, tp = risk_mgr.calculate_atr_stops(
-                                price, atr, "long",
-                                atr_stop_mult=getattr(settings, "ATR_STOP_MULTIPLIER", 2.0),
-                                atr_profit_mult=getattr(settings, "ATR_PROFIT_MULTIPLIER", 3.0),
-                            )
-                        else:
-                            tp = price * (1 + settings.TAKE_PROFIT_PCT)
-                            sl = price * (1 - settings.STOP_LOSS_PCT)
-                        trader.place_bracket_order(symbol, qty, "buy", tp, sl)
+                    if signal == 1 and symbol not in positions:
+                        qty = max(1, int((account_value * 0.05) / price))
+                        trader.place_order(symbol, qty, "buy")
+                        trader.place_trailing_stop(symbol, qty, 0.05) # 5% trailing stop
+                    elif signal == -1 and symbol in positions:
+                        trader.close_position(symbol)
 
-                elif signal == -1 and symbol in positions:
-                    trader.close_position(symbol)
+            else:  # default to mean_reversion
+                for symbol in settings.SYMBOLS:
+                    if not _running:
+                        break
+                    df = fetcher.fetch_historical(symbol, period="6mo")
+                    if df.empty:
+                        continue
+                    df = ind_engine.compute_all(df)
+                    df = sig_gen.generate_mean_reversion_signals(df)
+
+                    if use_ml:
+                        from strategy.ml_filter import MLSignalFilter
+                        ml_filter = MLSignalFilter()
+                        ml_filter.train(df)
+                        df = ml_filter.filter_signals(df)
+
+                    latest = df.iloc[-1]
+                    signal = int(latest.get("signal", 0))
+                    strength = float(latest.get("signal_strength", 0))
+                    price = latest["Close"]
+                    atr = float(latest.get("atr", 0.0))
+
+                    if signal == 1 and symbol not in positions:
+                        qty = risk_mgr.calculate_position_size(
+                            account_value, price, strength, regime_multiplier=1.0
+                        )
+                        if qty > 0:
+                            use_atr = atr > 0
+                            if use_atr:
+                                sl, tp = risk_mgr.calculate_atr_stops(
+                                    price, atr, "long",
+                                    atr_stop_mult=getattr(settings, "ATR_STOP_MULTIPLIER", 2.0),
+                                    atr_profit_mult=getattr(settings, "ATR_PROFIT_MULTIPLIER", 3.0),
+                                )
+                            else:
+                                tp = price * (1 + settings.TAKE_PROFIT_PCT)
+                                sl = price * (1 - settings.STOP_LOSS_PCT)
+                            trader.place_bracket_order(symbol, qty, "buy", tp, sl)
+
+                    elif signal == -1 and symbol in positions:
+                        trader.close_position(symbol)
 
         except Exception as e:
             logger.error(f"Error in trading loop: {e}")
@@ -767,7 +846,6 @@ def run_trade(use_ml: bool = True, use_regime: bool = False) -> None:
         time.sleep(settings.TRADING_INTERVAL_SECONDS)
 
     logger.info("Trading loop stopped.")
-
 
 def run_analyze(symbols: list, years: int = 2) -> None:
     """Run a focused analysis on trade quality for specified symbols.
@@ -1354,13 +1432,7 @@ def main():
         strategy = args.strategy
         if strategy in ("pairs", "momentum", "adaptive"):
             logger.info(f"Paper trading with strategy: {strategy}")
-            logger.info(
-                "Note: --strategy %s in live trade mode uses the mean reversion loop "
-                "as the execution layer. Full live trading for pairs/momentum/adaptive "
-                "requires exchange integration beyond the current demo scope.",
-                strategy,
-            )
-        run_trade(use_ml=use_ml, use_regime=(args.regime or strategy == "adaptive"))
+        run_trade(strategy=strategy, use_ml=use_ml)
 
 
 if __name__ == "__main__":

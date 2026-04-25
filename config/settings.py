@@ -7,8 +7,8 @@ ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
 ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
 
-SYMBOLS = ["SPY", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META"]
-TRAINING_SYMBOLS = ["SPY", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META"]
+SYMBOLS = ["V", "MSFT", "AVGO", "MA", "CRM", "SBUX", "META", "JPM", "CMCSA", "GS", "QCOM", "HON", "XOM", "CVX", "AMD", "WMT", "MRK", "ORCL", "DIS", "HD"]
+TRAINING_SYMBOLS = ["V", "MSFT", "AVGO", "MA", "CRM", "SBUX", "META", "JPM", "CMCSA", "GS", "QCOM", "HON", "XOM", "CVX", "AMD", "WMT", "MRK", "ORCL", "DIS", "HD"]
 LOOKBACK_PERIOD = 252
 Z_SCORE_ENTRY_THRESHOLD = 1.5
 Z_SCORE_EXIT_THRESHOLD = 0.3
