@@ -259,10 +259,10 @@ class MomentumTrader:
     # ------------------------------------------------------------------
 
     def generate_signals(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Generate momentum trading signals for a single symbol.
+        """Generate momentum trading signals for a single symbol using Unsupervised Clustering (GMM).
 
-        BUY  when: momentum_score > 0.4 AND price > SMA_SLOW AND ADX > threshold
-        SELL when: momentum_score < -0.3 OR price < SMA_SLOW OR trailing stop hit
+        BUY  when: momentum_score is in the 'Extreme' cluster AND price > SMA_SLOW AND ADX > threshold
+        SELL when: momentum_score drops below the 'Extreme' cluster boundary OR price < SMA_SLOW OR trailing stop hit
 
         Args:
             df: OHLCV DataFrame with 'Close', 'High', 'Low', optionally 'atr'.
@@ -272,9 +272,12 @@ class MomentumTrader:
               signal (+1 buy, -1 sell, 0 hold),
               signal_strength (0-1),
               momentum_score,
+              dynamic_threshold,
               trailing_stop,
               trend_score.
         """
+        from sklearn.mixture import GaussianMixture
+        
         result = self.calculate_trend_signals(df)
         result["momentum_score"] = self.calculate_momentum_score(df)
 
@@ -283,33 +286,61 @@ class MomentumTrader:
             high_low = result["High"] - result["Low"] if "High" in result.columns and "Low" in result.columns else pd.Series(0, index=result.index)
             result["atr"] = high_low.rolling(window=14).mean().fillna(0)
 
+        # Calculate Dynamic Thresholds via Rolling GMM
+        mom_array = result["momentum_score"].fillna(0).values
+        dynamic_thresholds = np.zeros(len(mom_array))
+        
+        for i in range(len(mom_array)):
+            if i < 126: # Need at least 6 months of data to cluster
+                dynamic_thresholds[i] = 0.4 # fallback
+                continue
+                
+            # Strictly T-1 lookback to prevent look-ahead bias
+            start_idx = max(0, i - 252)
+            window_data = mom_array[start_idx:i].reshape(-1, 1) 
+            
+            try:
+                # 2-cluster GMM (Weak/Normal vs Extreme Momentum)
+                gmm = GaussianMixture(n_components=2, random_state=42)
+                gmm.fit(window_data)
+                
+                # Find the cluster with the highest mean (Extreme Momentum)
+                extreme_cluster_idx = np.argmax(gmm.means_)
+                labels = gmm.predict(window_data)
+                extreme_scores = window_data[labels == extreme_cluster_idx]
+                
+                if len(extreme_scores) > 0:
+                    threshold = extreme_scores.min()
+                    # Sanity check: Ensure threshold isn't completely negative
+                    dynamic_thresholds[i] = max(0.1, threshold)
+                else:
+                    dynamic_thresholds[i] = 0.4
+            except Exception:
+                dynamic_thresholds[i] = 0.4
+                
+        result["dynamic_threshold"] = dynamic_thresholds
+
         # Trailing stop tracking
         entry_price = 0.0
         highest_since_entry = 0.0
         in_position = False
         trailing_stops = pd.Series(np.nan, index=result.index)
-        # Number of bars to sit out after each SELL to prevent whipsaw re-entry
         POST_SELL_COOLDOWN_BARS = 5
         cooldown_remaining = 0
-
-        # Entry threshold: require stronger momentum than the exit threshold to
-        # avoid immediately re-entering after a weak momentum-driven sell.
-        ENTRY_MOMENTUM_THRESHOLD = 0.4
-        # Signal-strength formula: map [0.4, 1.0] → [0.3, 1.0]
-        STRENGTH_RANGE = 1.0 - ENTRY_MOMENTUM_THRESHOLD  # 0.6
-        STRENGTH_OFFSET = 0.3
 
         # Initialise signal columns
         result["signal"] = 0
         result["signal_strength"] = 0.0
 
-        for idx in result.index:
+        for idx, i in zip(result.index, range(len(result))):
             row = result.loc[idx]
             price = float(row["Close"])
             mom_score = float(row["momentum_score"]) if not pd.isna(row["momentum_score"]) else 0.0
             sma_slow_val = float(row["sma_slow"]) if not pd.isna(row.get("sma_slow", np.nan)) else np.nan
             adx_val = float(row["adx"]) if not pd.isna(row.get("adx", np.nan)) else 0.0
             atr_val = float(row["atr"]) if not pd.isna(row.get("atr", np.nan)) else 0.0
+            
+            current_threshold = dynamic_thresholds[i]
 
             if in_position:
                 if price > highest_since_entry:
@@ -320,7 +351,8 @@ class MomentumTrader:
                 # Exit conditions
                 stop_hit = price <= stop_price
                 below_sma = (not pd.isna(sma_slow_val)) and (price < sma_slow_val)
-                weak_momentum = mom_score < -0.3
+                # Exit if momentum drops below the dynamic "Extreme" cluster boundary
+                weak_momentum = mom_score < (current_threshold - 0.1)
 
                 if stop_hit or below_sma or weak_momentum:
                     result.at[idx, "signal"] = -1
@@ -330,7 +362,6 @@ class MomentumTrader:
                     highest_since_entry = 0.0
                     cooldown_remaining = POST_SELL_COOLDOWN_BARS
             else:
-                # Decrement cooldown counter; skip entry during cooldown
                 if cooldown_remaining > 0:
                     cooldown_remaining -= 1
                     continue
@@ -338,11 +369,12 @@ class MomentumTrader:
                 # Entry conditions
                 above_sma = (not pd.isna(sma_slow_val)) and (price > sma_slow_val)
                 strong_trend = adx_val > self.adx_threshold
-                strong_momentum = mom_score > ENTRY_MOMENTUM_THRESHOLD
+                strong_momentum = mom_score > current_threshold
 
                 if strong_momentum and above_sma and strong_trend:
                     result.at[idx, "signal"] = 1
-                    strength = min(1.0, (mom_score - ENTRY_MOMENTUM_THRESHOLD) / STRENGTH_RANGE + STRENGTH_OFFSET)
+                    # Scale strength
+                    strength = min(1.0, 0.3 + max(0, mom_score - current_threshold))
                     result.at[idx, "signal_strength"] = round(strength, 4)
                     in_position = True
                     entry_price = price
