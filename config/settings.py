@@ -105,8 +105,8 @@ MOMENTUM_REBALANCE_DAYS = 20  # Rebalance portfolio every N trading days
 
 # Adaptive Strategy
 REGIME_ALLOCATIONS = {
-    0: {"pairs": 0.7, "momentum": 0.2, "cash": 0.1},  # Mean-reverting
-    1: {"pairs": 0.2, "momentum": 0.7, "cash": 0.1},  # Trending
-    2: {"pairs": 0.0, "momentum": 0.0, "cash": 1.0},  # Crisis
+    0: {"mean_reversion": 0.9, "pairs": 0.0, "momentum": 0.1, "cash": 0.0},  # Low Volatility
+    1: {"mean_reversion": 0.3, "pairs": 0.0, "momentum": 0.1, "cash": 0.6},  # Normal / Uptrending
+    2: {"mean_reversion": 0.0, "pairs": 0.0, "momentum": 0.9, "cash": 0.1},  # High Volatility / Crisis
 }
 TRANSITION_DAYS = 5
