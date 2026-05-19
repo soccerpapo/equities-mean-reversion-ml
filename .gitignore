@@ -17,3 +17,10 @@ logs/
 .DS_Store
 trade_log_*.csv
 experiments/
+
+# Academic Projects
+Ec143_Final_Project.*
+ec143_results/
+EECS126_Final_Project.*
+build_notebook.py
+build_eecs126_notebook.py

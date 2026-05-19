@@ -70,7 +70,7 @@ MIN_OPTIONAL_CONFIRMATIONS = 1
 # Backtest reproducibility: pin the end date so the data window doesn't shift
 # when re-running on a different calendar day.  Empty string = use today (default).
 # Set via CLI: --end-date 2026-03-19
-BACKTEST_END_DATE = ""
+BACKTEST_END_DATE = "2026-04-29"
 
 # Per-stock adaptive profiles: auto-calibrate parameters from historical data
 USE_STOCK_PROFILES = True

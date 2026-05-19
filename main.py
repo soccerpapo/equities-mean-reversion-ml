@@ -101,7 +101,7 @@ def _prepare_signals(
     regime_series = None
     if use_regime:
         n_components = getattr(settings, "REGIME_N_COMPONENTS", 3)
-        detector = RegimeDetector(n_components=n_components)
+        detector = RegimeDetector(n_components=n_components, random_state=42)
         detector.fit(df)
         regime_series = _apply_regime_labels(df, detector)
 
@@ -392,7 +392,7 @@ def run_compare(symbols: list, years: int = 2) -> None:
 
         # ---- Path B: + Regime Detection ----
         n_components = getattr(settings, "REGIME_N_COMPONENTS", 3)
-        detector = RegimeDetector(n_components=n_components)
+        detector = RegimeDetector(n_components=n_components, random_state=42)
         detector.fit(df_base)
         df_regime = df_base.copy()
         regime_series = _apply_regime_labels(df_regime, detector)
@@ -696,7 +696,7 @@ def run_trade(strategy: str = "mean_reversion", use_ml: bool = True) -> None:
     regime_detector = None
     if use_regime:
         n_components = getattr(settings, "REGIME_N_COMPONENTS", 3)
-        regime_detector = RegimeDetector(n_components=n_components)
+        regime_detector = RegimeDetector(n_components=n_components, random_state=42)
 
     logger.info(f"Starting live trading loop (strategy={strategy}). Press Ctrl+C to stop.")
     while _running:

@@ -1254,7 +1254,14 @@ class BacktestEngine:
                         best_sharpe = sharpe
                         best_alloc = alloc
                         
-                w_mr, w_p, w_mo, w_c = best_alloc
+                # Apply exponential weight smoothing (alpha = 0.25) to prevent violent allocation jumps.
+                # This acts as a low-pass filter, making the strategy robust to floating-point noise
+                # and preventing drastic portfolio turnover on edge-case regime boundaries.
+                smoothing_factor = 0.25
+                w_mr = (1 - smoothing_factor) * w_mr + smoothing_factor * best_alloc[0]
+                w_p  = (1 - smoothing_factor) * w_p  + smoothing_factor * best_alloc[1]
+                w_mo = (1 - smoothing_factor) * w_mo + smoothing_factor * best_alloc[2]
+                w_c  = (1 - smoothing_factor) * w_c  + smoothing_factor * best_alloc[3]
 
             # Apply daily return
             daily_ret = (

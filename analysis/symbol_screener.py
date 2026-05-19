@@ -114,15 +114,43 @@ def _dip_recovery_rate(
 
 
 def _compute_beta(returns: pd.Series, benchmark_returns: pd.Series) -> float:
-    """Compute beta relative to benchmark."""
+    """Compute beta relative to benchmark.
+    
+    Now uses a blend of traditional Linear Beta (LLSE) and 
+    Non-Linear Tail Beta (MMSE) to better capture real-world
+    crash sensitivities.
+    """
     aligned = pd.concat([returns, benchmark_returns], axis=1).dropna()
     if len(aligned) < 30:
         return 1.0
+        
+    # 1. Traditional Linear Beta (LLSE)
     cov = np.cov(aligned.iloc[:, 0], aligned.iloc[:, 1])
     var_bench = cov[1, 1]
-    if var_bench == 0:
-        return 1.0
-    return float(cov[0, 1] / var_bench)
+    linear_beta = float(cov[0, 1] / var_bench) if var_bench != 0 else 1.0
+    
+    # 2. Non-Linear Tail Beta (MMSE via KNN)
+    # How does the stock react when SPY drops 2%?
+    from sklearn.neighbors import KNeighborsRegressor
+    X = aligned.iloc[:, 1].values.reshape(-1, 1) # SPY returns
+    y = aligned.iloc[:, 0].values                # Stock returns
+    
+    try:
+        knn = KNeighborsRegressor(n_neighbors=5)
+        knn.fit(X, y)
+        
+        # Estimate expected stock return when SPY is at 0% vs -2%
+        expected_normal = knn.predict([[0.0]])[0]
+        expected_crash = knn.predict([[-0.02]])[0]
+        
+        # Non-linear slope (Rise over Run)
+        tail_beta = (expected_normal - expected_crash) / 0.02
+    except Exception:
+        tail_beta = linear_beta
+        
+    # Blend the two betas, weighting the non-linear tail behavior
+    blended_beta = (linear_beta * 0.5) + (tail_beta * 0.5)
+    return float(blended_beta)
 
 
 def screen_symbols(

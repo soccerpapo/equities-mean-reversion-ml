@@ -186,13 +186,13 @@ class PairsTrader:
     ) -> pd.DataFrame:
         """Calculate the spread and its z-score between two price series.
 
-        Spread = price_a - hedge_ratio * price_b
-        Z-score = (spread - rolling_mean) / rolling_std
+        Uses non-linear MMSE (K-Nearest Neighbors) to estimate E[Price_A | Price_B],
+        bypassing the static linear hedge_ratio assumption.
 
         Args:
             price_a: Price series for stock A.
             price_b: Price series for stock B.
-            hedge_ratio: Static hedge ratio (or use calculate_rolling_hedge_ratio).
+            hedge_ratio: Legacy parameter (ignored, replaced by dynamic KNN MMSE).
             window: Rolling window for z-score (defaults to self.lookback).
 
         Returns:
@@ -203,7 +203,21 @@ class PairsTrader:
         col_a = aligned.iloc[:, 0]
         col_b = aligned.iloc[:, 1]
 
-        spread = col_a - hedge_ratio * col_b
+        # Use non-linear MMSE (K-Nearest Neighbors) instead of static linear hedge
+        from sklearn.neighbors import KNeighborsRegressor
+        
+        X = col_b.values.reshape(-1, 1)
+        y = col_a.values
+        
+        if len(X) < 5:
+            # Fallback for very small arrays
+            spread = col_a - hedge_ratio * col_b
+        else:
+            knn = KNeighborsRegressor(n_neighbors=5)
+            knn.fit(X, y)
+            expected_a = knn.predict(X)
+            spread = pd.Series(y - expected_a, index=aligned.index)
+
         spread_mean = spread.rolling(window=window).mean()
         spread_std = spread.rolling(window=window).std()
         spread_zscore = (spread - spread_mean) / spread_std.replace(0, np.nan)

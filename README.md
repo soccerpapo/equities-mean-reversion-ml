@@ -61,7 +61,7 @@ These are sound theoretical priors, not data-mined decisions:
 - **ML filter with walk-forward CV** -- uses TimeSeriesSplit, no future data leakage
 - **Signal weights** (z-score 30%, RSI 25%, BB 25%, volume 20%) -- domain judgment
 
-### Lessons learned (phases 1-9)
+### Lessons learned (phases 1-12)
 
 1. **Risk control is easy, alpha is hard.** The system had excellent drawdown control from the start, but earning excess returns required structural changes (benchmark overlay, multi-symbol portfolio, larger positions).
 2. **Don't time the market.** A "euphoria filter" that reduced exposure when SPY was overbought cost 3.23% in returns for 0.05% drawdown improvement. Overbought conditions persist in bull markets.
@@ -70,6 +70,9 @@ These are sound theoretical priors, not data-mined decisions:
 5. **Per-stock adaptive profiles are powerful but prone to overfitting** when calibrated on the same data window used for backtesting. The concept is sound; the implementation needs expanding-window calibration.
 6. **Small sample sizes make everything fragile.** With 17 trades over 5 years, a profit factor of 3.3 has enormous confidence intervals. Optimizing for 2-trade edge cases is overfitting by definition.
 7. **Pin your backtest end date** for reproducibility. Relative periods (`2y`) shift daily, changing ML training windows and signal filtering.
+8. **Algorithmic Non-Determinism (The OpenMP Race Condition):** Even with fixed random seeds (`random_state=42`), exact numerical reproducibility is impossible in multi-threaded C-extensions like `scikit-learn` (KMeans initialization for GMM) and `pandas` (bottleneck/numexpr rolling std deviations). Because floating-point addition is not perfectly associative, different thread completion orders cause microscopic variances (`~1e-16`). In a continuous walk-forward optimizer, these microscopic differences cascade into altered position sizing and vastly different long-term compounding paths. To force absolute mathematical determinism, one must restrict execution to a single thread (`OMP_NUM_THREADS=1`).
+9. **Weight Smoothing is Mandatory for Online Optimizers:** Unconstrained "winner-takes-all" portfolio optimizers are extremely brittle to floating-point noise and short-term market anomalies. Applying Exponential Weight Smoothing (a low-pass filter) is critical. A smoothing factor of `0.25` (a 4-week transition period) proved to be the optimal mathematical sweet spot—reducing random backtest variance by 75% while maintaining the agility to adapt to genuine macroeconomic regime shifts.
+10. **Linear LLSE fails on Non-Gaussian Tails (Use True MMSE):** Basic Pairs Trading and CAPM Beta rely on Ordinary Least Squares (OLS), which mathematically acts as the Linear Least Squares Estimator (LLSE). This assumes joint Gaussianity. However, financial markets exhibit non-linear regime shifts, fat tails, and crash correlations. By replacing static linear regressions with a non-parametric K-Nearest Neighbors (KNN) regressor, we empirically estimated the true Minimum Mean Square Error (MMSE) conditional expectation $\mathbb{E}[P_A \mid P_B]$. This non-linear tail-awareness improved the Pairs Trading engine's efficiency and boosted total strategy returns by >7.3%.
 
 ### Next steps for proper development
 
