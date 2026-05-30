@@ -16,7 +16,7 @@ RSI_OVERSOLD = 30
 RSI_OVERBOUGHT = 70
 BOLLINGER_WINDOW = 20
 BOLLINGER_STD = 2.0
-MAX_POSITION_SIZE_PCT = 0.10
+MAX_POSITION_SIZE_PCT = 0.35
 STOP_LOSS_PCT = 0.02
 TAKE_PROFIT_PCT = 0.06
 MAX_PORTFOLIO_DRAWDOWN_PCT = 0.1
@@ -89,11 +89,11 @@ PAIRS_ZSCORE_EXIT = 0.5
 PAIRS_ZSCORE_STOP = 3.5
 PAIRS_LOOKBACK = 60  # Rolling window for spread z-score
 PAIRS_COINT_PVALUE = 0.05  # Max p-value for cointegration
-CAPITAL_PER_PAIR = 0.03  # 3% of portfolio per pair
-MAX_SIMULTANEOUS_PAIRS = 3  # Maximum number of open pair positions at once
+CAPITAL_PER_PAIR = 0.15  # Increased to 15% of portfolio per pair (was 3%)
+MAX_SIMULTANEOUS_PAIRS = 4  # Maximum number of open pair positions at once
 MAX_PAIR_LOSS_PCT = 0.03  # Close a pair if unrealized loss exceeds 3% of capital_per_pair
 PAIR_COOLDOWN_DAYS = 5  # Trading days before a stopped-out pair can re-enter
-MAX_PORTFOLIO_EXPOSURE = 0.15  # Max fraction of portfolio committed to pairs at any time
+MAX_PORTFOLIO_EXPOSURE = 0.60  # Max fraction of portfolio committed to pairs (was 15%)
 
 # Momentum
 MOMENTUM_SMA_FAST = 50

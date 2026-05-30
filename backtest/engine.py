@@ -62,44 +62,66 @@ class BacktestEngine:
         return base_stop_mult * scale, base_profit_mult * scale
 
     def _calculate_position_size(
-        self, atr: float, price: float, max_size_override: float = None,
+        self,
+        atr: float,
+        price: float,
+        strength: float = 0.0,
+        b_ratio: float = 1.5,
+        max_size_override: float = None,
     ) -> float:
-        """Calculate position size as a fraction of cash based on ATR volatility.
+        """Calculate position size using the Fractional Kelly Criterion.
 
-        Uses volatility-inverse sizing: lower volatility → larger position (up to
-        MAX_POSITION_SIZE_PCT), higher volatility → smaller position (down to 0.15).
-        ATR as a percentage of price is used as the volatility measure.
+        Kelly fraction f* = p - (1 - p) / b
+        where:
+          - p is the probability of a winning trade (signal_strength from ML).
+          - b is the reward-to-risk ratio (tp_mult / sl_mult).
+
+        Uses Half-Kelly for safety and caps at max_size.
 
         Args:
-            atr: Average True Range value for the current bar.
+            atr: Average True Range value for the current bar (used for fallback sizing).
             price: Current asset price.
+            strength: ML probability score of a winning trade (0.0 to 1.0).
+            b_ratio: Reward-to-risk ratio.
             max_size_override: Optional per-stock max position size (from StockProfile).
 
         Returns:
-            Position size as a fraction of available cash (between 0.15 and MAX_POSITION_SIZE_PCT).
+            Position size as a fraction of available cash.
         """
         from config import settings
 
         max_size = max_size_override if max_size_override is not None else getattr(settings, "MAX_POSITION_SIZE_PCT", 0.25)
-        min_size = 0.15
+        
+        # If ML strength is very low or Kelly inputs are invalid, use fallback inverse-vol sizing
+        if strength <= 0.0 or b_ratio <= 0.0:
+            min_size = 0.15
+            if atr <= 0 or price <= 0:
+                return max_size
+            atr_pct = atr / price
+            low_vol_threshold = 0.01
+            high_vol_threshold = 0.03
+            if atr_pct <= low_vol_threshold:
+                return max_size
+            elif atr_pct >= high_vol_threshold:
+                return min_size
+            else:
+                t = (atr_pct - low_vol_threshold) / (high_vol_threshold - low_vol_threshold)
+                return max_size - t * (max_size - min_size)
 
-        if atr <= 0 or price <= 0:
-            return max_size  # default to max when ATR unavailable
-
-        # Normalised volatility: ATR as percentage of price
-        atr_pct = atr / price
-
-        # Linear interpolation: low vol (≤1%) → max_size; high vol (≥3%) → min_size
-        low_vol_threshold = 0.01
-        high_vol_threshold = 0.03
-
-        if atr_pct <= low_vol_threshold:
-            return max_size
-        elif atr_pct >= high_vol_threshold:
-            return min_size
-        else:
-            t = (atr_pct - low_vol_threshold) / (high_vol_threshold - low_vol_threshold)
-            return max_size - t * (max_size - min_size)
+        # Kelly Calculation
+        p = strength
+        q = 1.0 - p
+        
+        kelly_fraction = p - (q / b_ratio)
+        
+        if kelly_fraction <= 0:
+            return 0.0 # Don't take negative expectation trades
+            
+        # Fractional Kelly (Half-Kelly) for safety
+        fractional_kelly = kelly_fraction * 0.5
+        
+        # Cap at max_size
+        return min(fractional_kelly, max_size)
 
     def run(
         self,
@@ -1163,9 +1185,11 @@ class BacktestEngine:
         
         cap_per_sym = initial_capital / max(1, len(mr_data))
         mr_total = pd.Series(0.0, index=ref_df.index)
+        mr_trades = []
         for sym, df in mr_data.items():
             bt = BacktestEngine()
             df_port = bt.run(symbols_data[sym], df, initial_capital=cap_per_sym, benchmark_prices=ref_df["Close"])
+            mr_trades.extend(bt._trades)
             if not df_port.empty:
                 aligned = df_port["portfolio_value"].reindex(ref_df.index).ffill()
                 mr_total += aligned.fillna(cap_per_sym)
@@ -1190,6 +1214,7 @@ class BacktestEngine:
             ]
         bt_pairs = BacktestEngine()
         df_pairs_port = bt_pairs.run_pairs_backtest(pairs_input, initial_capital=initial_capital)
+        pairs_trades = bt_pairs._trades
         pairs_returns = df_pairs_port["portfolio_value"].pct_change().reindex(ref_df.index).fillna(0) if not df_pairs_port.empty else pd.Series(0, index=ref_df.index)
 
         # Momentum
@@ -1197,6 +1222,7 @@ class BacktestEngine:
         bt_mom = BacktestEngine()
         mom_data = {sym: df for sym, df in symbols_data.items() if sym != "SPY"}
         df_mom_port = bt_mom.run_momentum_backtest(mom_data, initial_capital=initial_capital)
+        mom_trades = bt_mom._trades
         mom_returns = df_mom_port["portfolio_value"].pct_change().reindex(ref_df.index).fillna(0) if not df_mom_port.empty else pd.Series(0, index=ref_df.index)
 
         # 2. Continuous Walk-Forward Optimization Loop
@@ -1255,8 +1281,6 @@ class BacktestEngine:
                         best_alloc = alloc
                         
                 # Apply exponential weight smoothing (alpha = 0.25) to prevent violent allocation jumps.
-                # This acts as a low-pass filter, making the strategy robust to floating-point noise
-                # and preventing drastic portfolio turnover on edge-case regime boundaries.
                 smoothing_factor = 0.25
                 w_mr = (1 - smoothing_factor) * w_mr + smoothing_factor * best_alloc[0]
                 w_p  = (1 - smoothing_factor) * w_p  + smoothing_factor * best_alloc[1]
@@ -1275,7 +1299,10 @@ class BacktestEngine:
             portfolio_values.append({
                 "date": date, 
                 "portfolio_value": current_val, 
-                "cash": current_val * w_c
+                "cash": current_val * w_c,
+                "w_mr": w_mr,
+                "w_p": w_p,
+                "w_mo": w_mo,
             })
             
         self._portfolio = pd.DataFrame(portfolio_values).set_index("date")
@@ -1287,16 +1314,33 @@ class BacktestEngine:
             benchmark_shares = initial_capital / close_prices.iloc[0]
             self._benchmark = close_prices * benchmark_shares
             
-        # To make the report happy about trades, we can add a dummy trade
-        if len(df_all) > 0:
-            self._trades.append({
-                "entry_date": df_all.index[0],
-                "exit_date": df_all.index[-1],
-                "symbol": "DYNAMIC_PORTFOLIO",
-                "side": "long",
-                "pnl": current_val - initial_capital,
-                "exit_reason": "end_of_backtest",
-            })
+        # Post-process trades: Scale PnL based on the allocation weight at the time of exit
+        df_weights = self._portfolio[["w_mr", "w_p", "w_mo"]]
+        
+        def scale_and_add_trades(trades_list, weight_col):
+            for trade in trades_list:
+                exit_date = trade.get("exit_date")
+                if exit_date and exit_date in df_weights.index:
+                    w = df_weights.loc[exit_date, weight_col]
+                elif exit_date:
+                    # fallback to nearest if not exact match
+                    idx = df_weights.index.get_indexer([exit_date], method='nearest')[0]
+                    w = df_weights.iloc[idx][weight_col] if idx != -1 else 0
+                else:
+                    w = 0
+                
+                # Only include trades if the strategy had some capital allocated to it
+                if w > 0.01:
+                    trade_copy = trade.copy()
+                    trade_copy["pnl"] = trade_copy.get("pnl", 0) * w
+                    self._trades.append(trade_copy)
+                    
+        scale_and_add_trades(mr_trades, "w_mr")
+        scale_and_add_trades(pairs_trades, "w_p")
+        scale_and_add_trades(mom_trades, "w_mo")
+        
+        # Sort trades chronologically by exit date
+        self._trades.sort(key=lambda x: x.get("exit_date", pd.Timestamp.min))
 
         return self._portfolio
 
