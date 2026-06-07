@@ -85,6 +85,7 @@ These are sound theoretical priors, not data-mined decisions:
 7. **✅ Live Execution Logic** -- Wired up actual live paper trading execution for Pairs and Momentum strategies, triggered adaptively via the Gaussian Mixture Model regime detector.
 8. **✅ Optimize Regime Switching & Strategy Alpha** -- Solved non-stationarity via a Continuous Walk-Forward Optimizer with Exponential Weight Smoothing. Upgraded Pairs Trading to non-linear MMSE (KNN) to capture fat tails.
 9. **✅ Conviction Scaling via Fractional Kelly Criterion** -- Replaced rigid 10% constraints with Half-Kelly sizing and loosened global portfolio exposure to 60%. This allowed the system to dynamically press its edge, skyrocketing the out-of-sample total return to 39.09% and generating a highly robust **+0.14 Alpha** over the S&P 500 benchmark.
+10. **✅ Ornstein-Uhlenbeck (OU) Exits & ML Determinism** -- Added dynamic half-life filtering and stochastic $\mu$ take-profits based on discrete OU process modeling. Eliminated OpenMP thread-racing in LightGBM grids for strict determinism. Unpinned dates for continuous forward-walk, yielding **+0.27 Live Alpha**.
 
 ## Features
 
