@@ -152,6 +152,44 @@ class IndicatorEngine:
         shifted = series.shift(period)
         return (series - shifted) / shifted.replace(0, np.nan) * 100
 
+    def compute_ou_parameters(self, series: pd.Series, window: int = 60) -> pd.DataFrame:
+        """Compute Ornstein-Uhlenbeck process parameters via rolling linear regression.
+        
+        dx_t = theta * (mu - x_t) * dt + sigma * dW_t
+        Discretized: x_t - x_{t-1} = a + b * x_{t-1} + e_t
+        Where b = -theta * dt, a = mu * theta * dt
+        
+        Args:
+            series: Price series
+            window: Lookback window for rolling regression
+            
+        Returns:
+            DataFrame with ou_theta, ou_mu, and ou_half_life
+        """
+        diff = series.diff()
+        lag = series.shift(1)
+        
+        # Rolling covariance and variance to find regression slope (beta) and intercept (alpha)
+        cov = diff.rolling(window=window).cov(lag)
+        var = lag.rolling(window=window).var()
+        
+        beta = cov / var.replace(0, np.nan)
+        alpha = diff.rolling(window=window).mean() - beta * lag.rolling(window=window).mean()
+        
+        # Calculate OU parameters (assuming dt = 1 day)
+        theta = -beta
+        mu = alpha / theta.replace(0, np.nan)
+        
+        # Calculate half-life. If theta <= 0, process is not mean-reverting.
+        half_life = np.log(2) / theta
+        half_life = half_life.where(theta > 0, np.nan) # np.nan implies infinite half-life (random walk)
+        
+        return pd.DataFrame({
+            "ou_theta": theta,
+            "ou_mu": mu,
+            "ou_half_life": half_life
+        }, index=series.index)
+
     def compute_rolling_correlation(self, series_a: pd.Series, series_b: pd.Series, window: int = 60) -> pd.Series:
         """Compute rolling correlation between two price series.
 
@@ -229,6 +267,12 @@ class IndicatorEngine:
 
         # Volatility percentile (for regime context)
         result["vol_percentile"] = vol_20.rolling(window=252, min_periods=20).rank(pct=True)
+        
+        # Ornstein-Uhlenbeck Parameters
+        ou_df = self.compute_ou_parameters(close, window=60)
+        result["ou_theta"] = ou_df["ou_theta"]
+        result["ou_mu"] = ou_df["ou_mu"]
+        result["ou_half_life"] = ou_df["ou_half_life"]
 
         # VIX integration (macro filter)
         if vix_data is not None:

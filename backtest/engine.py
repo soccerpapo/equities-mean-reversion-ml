@@ -200,6 +200,7 @@ class BacktestEngine:
             signal = int(row.get("signal", 0))
             strength = float(row.get("signal_strength", 0.5))
             atr = float(row.get("atr", 0.0)) if "atr" in row.index else 0.0
+            ou_mu = float(row.get("ou_mu", 0.0)) if "ou_mu" in row.index else 0.0
 
             # Current benchmark price for overlay
             bm_price = 0.0
@@ -1487,9 +1488,18 @@ class BacktestEngine:
                 row = signals_by_symbol[sym].loc[date]
                 price = float(row["Close"])
                 signal = int(row.get("signal", 0))
+                ou_mu = float(row.get("ou_mu", 0.0)) if "ou_mu" in row.index else 0.0
 
                 exit_by_stop = False
                 exit_by_tp = False
+                exit_by_ou = False
+                
+                use_ou_exits = getattr(settings, "USE_OU_DYNAMIC_EXITS", True)
+                if use_ou_exits and ou_mu > 0:
+                    if pos["shares"] > 0 and price >= ou_mu:
+                        exit_by_ou = True
+                    elif pos["shares"] < 0 and price <= ou_mu:
+                        exit_by_ou = True
 
                 if use_atr_stops and pos["stop"] > 0:
                     if pos["shares"] > 0 and price <= pos["stop"]:
@@ -1505,7 +1515,7 @@ class BacktestEngine:
 
                 exit_by_signal = (pos["shares"] > 0 and signal == -1) or (pos["shares"] < 0 and signal == 1)
 
-                if exit_by_stop or exit_by_tp or exit_by_signal:
+                if exit_by_stop or exit_by_tp or exit_by_ou or exit_by_signal:
                     exit_exec = price * (1 - self.SLIPPAGE) if pos["shares"] > 0 else price * (1 + self.SLIPPAGE)
                     pnl = (exit_exec - pos["entry_price"]) * pos["shares"]
                     proceeds = exit_exec * abs(pos["shares"])
@@ -1524,7 +1534,7 @@ class BacktestEngine:
                         "pnl": pnl,
                         "return_pct": (exit_exec / pos["entry_price"] - 1) * (1 if pos["shares"] > 0 else -1),
                         "holding_days": (date - pos["entry_date"]).days if hasattr(date - pos["entry_date"], "days") else 0,
-                        "exit_reason": "stop" if exit_by_stop else ("tp" if exit_by_tp else "signal"),
+                        "exit_reason": "stop" if exit_by_stop else ("ou_target" if exit_by_ou else ("tp" if exit_by_tp else "signal")),
                     }
                     trade_record.update(pos.get("indicators", {}))
                     self._trades.append(trade_record)

@@ -252,6 +252,22 @@ class SignalGenerator:
                 signals[weak] = 0
                 signal_strength[weak] = 0.0
 
+        # --- FILTER LAYER 5: Ornstein-Uhlenbeck Half-Life ---
+        use_ou_filter = getattr(settings, "USE_OU_HALF_LIFE_FILTER", False)
+        if use_ou_filter and "ou_half_life" in result.columns:
+            max_half_life = getattr(settings, "MAX_OU_HALF_LIFE", 30.0)
+            
+            # Block trades where the half-life is too long (random walk) or infinite (NaN)
+            ou_blocked = (signals != 0) & (
+                result["ou_half_life"].isna() | (result["ou_half_life"] > max_half_life)
+            )
+            signals[ou_blocked] = 0
+            signal_strength[ou_blocked] = 0.0
+            
+            filtered_ou = ou_blocked.sum()
+            if filtered_ou > 0:
+                logger.info(f"OU Half-Life filter suppressed {filtered_ou} signals")
+
         result["signal"] = signals
         result["signal_strength"] = signal_strength
 

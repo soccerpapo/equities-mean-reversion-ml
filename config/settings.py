@@ -60,6 +60,11 @@ MIN_SIGNAL_STRENGTH = 0.0
 USE_DIST_SMA200_FILTER = True
 MAX_DIST_SMA200 = 0.10
 
+# Ornstein-Uhlenbeck (OU) Half-Life Filter
+USE_OU_HALF_LIFE_FILTER = True
+MAX_OU_HALF_LIFE = 30.0  # Max days expected to revert
+USE_OU_DYNAMIC_EXITS = True  # Dynamically take profit at OU theoretical equilibrium (mu)
+
 # VIX macro filter
 USE_VIX_FILTER = False
 VIX_THRESHOLD_HIGH = 30
@@ -70,7 +75,7 @@ MIN_OPTIONAL_CONFIRMATIONS = 1
 # Backtest reproducibility: pin the end date so the data window doesn't shift
 # when re-running on a different calendar day.  Empty string = use today (default).
 # Set via CLI: --end-date 2026-03-19
-BACKTEST_END_DATE = "2026-04-29"
+BACKTEST_END_DATE = ""
 
 # Per-stock adaptive profiles: auto-calibrate parameters from historical data
 USE_STOCK_PROFILES = True

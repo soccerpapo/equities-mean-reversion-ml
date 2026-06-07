@@ -167,6 +167,8 @@ class MLSignalFilter:
                             scale_pos_weight=scale_pos_weight_value,
                             random_state=42,
                             verbose=-1,
+                            n_jobs=1,
+                            deterministic=True,
                         )
                         for train_idx, val_idx in tscv.split(X_train):
                             X_tr = X_train.iloc[train_idx]
@@ -195,6 +197,8 @@ class MLSignalFilter:
             scale_pos_weight=scale_pos_weight_value,
             random_state=42,
             verbose=-1,
+            n_jobs=1,
+            deterministic=True,
         )
         final_model.fit(X_train, y_train)
         return final_model
@@ -266,6 +270,8 @@ class MLSignalFilter:
                 scale_pos_weight=scale_pos_weight_fold,
                 random_state=42,
                 verbose=-1,
+                n_jobs=1,
+                deterministic=True,
             )
             fold_model.fit(X_tr, y_tr)
             wf_scores.append(fold_model.score(X_val, y_val))
